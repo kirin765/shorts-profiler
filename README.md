@@ -1,0 +1,88 @@
+# shorts-profiler MVP
+
+Short-form short video 구조 토큰화 및 프롬프트 생성 MVP. 로컬 우선 개발 환경을 기준으로 설계된 FastAPI + Redis/RQ + Postgres 아키텍처입니다.
+
+## 요구사항
+
+- Python 3.11+
+- Docker + Docker Compose
+- `ffmpeg`
+- `tesseract-ocr`
+
+## 빠른 시작
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+API: `http://localhost:8000`
+
+## 주요 엔드포인트
+
+- `POST /videos/upload` : 동영상 업로드
+  - `file` (multipart) 또는 `source_url`
+- `POST /jobs/analyze` : `{ "video_id": "..." }`
+- `GET /jobs/{job_id}` : 분석 상태/진행률
+- `GET /videos/{video_id}/tokens` : 토큰(JSON) 조회
+- `POST /videos/{video_id}/prompt` : `{ "target": "sora|seedance|script|all" }`
+- `GET /stats/summary` : 기간/카테고리/시간 구간 기반 집계
+- `GET /stats/patterns/top` : Top 패턴 조회
+
+## 로컬 실행 (비-Docker)
+
+```bash
+python -m venv .venv
+. .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.api.main:app --reload
+rq worker shorts -u redis://localhost:6379/0
+```
+
+## DB 마이그레이션
+
+```bash
+alembic upgrade head
+```
+
+`migrations/versions/001_initial.py`를 통해 아래 스키마를 생성합니다.
+
+- `videos`
+- `jobs`
+- `tokens`
+- `prompts`
+
+## 토큰 스키마(요약)
+
+- `schema_version`
+- `video_id`, `duration_sec`, `resolution`
+- `hook`
+- `editing`
+- `subtitle`
+- `visual`
+- `audio`
+- `structure`
+- `notes`
+
+원본 자막/프레임 텍스트/창작자 고유 문구는 출력에서 제외되고, 텍스트는 추상 통계로만 저장합니다.
+
+## 최소 UI
+
+`/`로 접속하면 업로드 / 분석 / 토큰 / 프롬프트 / 통계 화면이 표시됩니다.
+
+## 제한 사항
+
+- ASR 미지원 (현재 버전은 Tesseract OCR + 시각/오디오 휴리스틱 기반)
+- 외부 동영상 직접 스크래핑/크롤링 없음
+- URL 업로드는 사용자가 제공한 URL만 처리
+
+## 업로드(원격 반영) 예시
+
+```bash
+git branch -M codex/shorts-profiler-mvp-20260303
+git add .
+git commit -m "feat: implement shorts-profiler mvp"
+git remote add origin https://github.com/kirin765/shorts-profiler.git
+# 최초 push
+git push -u origin codex/shorts-profiler-mvp-20260303
+```

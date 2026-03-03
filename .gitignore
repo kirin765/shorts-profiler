@@ -1,0 +1,12 @@
+# ---- gitignore ----
+__pycache__/
+*.pyc
+.env
+.env.local
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.venv/
+storage/videos/*
+storage/tmp/*
+!.gitkeep

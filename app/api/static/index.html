@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shorts Profiler</title>
+    <style>
+      :root {
+        --bg: linear-gradient(180deg, #050714, #111827);
+        --card: #111827;
+        --text: #f5f7ff;
+        --muted: #a7b1c7;
+        --accent: #22d3ee;
+        --border: #273047;
+      }
+      body {
+        margin: 0;
+        color: var(--text);
+        background: var(--bg);
+        font-family: 'Trebuchet MS', 'Noto Sans KR', sans-serif;
+        padding: 24px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(17, 24, 39, 0.7);
+        padding: 16px;
+      }
+      h1,
+      h3 {
+        margin-top: 0;
+      }
+      input,
+      button,
+      select {
+        width: 100%;
+        margin-top: 8px;
+        margin-bottom: 8px;
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid #283248;
+        background: #0f172a;
+        color: #f1f5f9;
+      }
+      button {
+        background: var(--accent);
+        color: #020617;
+        border: none;
+        cursor: pointer;
+        font-weight: 700;
+      }
+      pre {
+        white-space: pre-wrap;
+        background: #0f172a;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        min-height: 180px;
+        overflow: auto;
+      }
+      @media (max-width: 900px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>shorts-profiler MVP</h1>
+    <p style="color:var(--muted);">동영상 업로드 후 분석을 실행하고 토큰/프롬프트/통계를 확인하세요.</p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>1) 업로드</h3>
+        <form id="upload-form">
+          <label>로컬 파일</label>
+          <input type="file" id="file" accept="video/*" />
+
+          <label>또는 URL (선택)</label>
+          <input id="url" placeholder="https://..." />
+
+          <label>카테고리</label>
+          <input id="category" placeholder="예: cooking" />
+
+          <button type="submit">업로드</button>
+        </form>
+        <pre id="upload-result">-</pre>
+      </div>
+
+      <div class="card">
+        <h3>2) 분석 시작</h3>
+        <label>video_id</label>
+        <input id="an-video-id" />
+        <button id="analyze-btn">분석 시작</button>
+
+        <label>job_id</label>
+        <input id="job-id" />
+        <button id="job-btn">상태 조회</button>
+        <pre id="job-result">-</pre>
+      </div>
+
+      <div class="card">
+        <h3>3) 토큰 / 프롬프트</h3>
+        <label>video_id</label>
+        <input id="token-video" />
+        <button id="tokens-btn">토큰 조회</button>
+
+        <label>프롬프트 타입</label>
+        <select id="prompt-target">
+          <option value="all">all</option>
+          <option value="sora">sora</option>
+          <option value="seedance">seedance</option>
+          <option value="script">script</option>
+        </select>
+        <button id="prompt-btn">프롬프트 생성</button>
+        <pre id="token-result">-</pre>
+      </div>
+
+      <div class="card">
+        <h3>4) 통계</h3>
+        <button id="summary-btn">요약 통계 조회</button>
+        <pre id="stats-result">-</pre>
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const safeJson = async (res) => {
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+        return await res.json();
+      };
+
+      $('upload-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const file = $('file').files[0];
+        const url = $('url').value.trim();
+        const category = $('category').value.trim();
+
+        if (!file && !url) {
+          alert('파일 또는 URL 중 하나는 필요합니다.');
+          return;
+        }
+
+        const form = new FormData();
+        if (file) form.append('file', file);
+        if (url) form.append('source_url', url);
+        if (category) form.append('category_tag', category);
+
+        const res = await fetch('/videos/upload', { method: 'POST', body: form });
+        const data = await safeJson(res);
+        $('upload-result').textContent = JSON.stringify(data, null, 2);
+      });
+
+      $('analyze-btn').onclick = async () => {
+        const video_id = $('an-video-id').value.trim();
+        if (!video_id) return alert('video_id 입력');
+        const res = await fetch('/jobs/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_id }),
+        });
+        const data = await safeJson(res);
+        $('job-id').value = data.job_id;
+        $('job-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      $('job-btn').onclick = async () => {
+        const job_id = $('job-id').value.trim();
+        const res = await fetch(`/jobs/${encodeURIComponent(job_id)}`);
+        const data = await safeJson(res);
+        $('job-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      $('tokens-btn').onclick = async () => {
+        const video_id = $('token-video').value.trim();
+        const res = await fetch(`/videos/${encodeURIComponent(video_id)}/tokens`);
+        const data = await safeJson(res);
+        $('token-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      $('prompt-btn').onclick = async () => {
+        const video_id = $('token-video').value.trim();
+        const target = $('prompt-target').value;
+        const res = await fetch(`/videos/${encodeURIComponent(video_id)}/prompt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target }),
+        });
+        const data = await safeJson(res);
+        $('token-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      $('summary-btn').onclick = async () => {
+        const res = await fetch('/stats/summary');
+        const data = await safeJson(res);
+        $('stats-result').textContent = JSON.stringify(data, null, 2);
+      };
+    </script>
+  </body>
+</html>

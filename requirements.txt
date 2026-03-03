@@ -1,0 +1,16 @@
+fastapi==0.116.1
+uvicorn[standard]==0.34.2
+sqlalchemy==2.0.39
+psycopg2-binary==2.9.10
+alembic==1.14.1
+pydantic==2.10.6
+pydantic-settings==2.10.1
+python-multipart==0.0.20
+redis==5.2.1
+rq==2.0.0
+python-dotenv==1.1.0
+requests==2.32.4
+pytesseract==0.3.13
+opencv-python-headless==4.11.0.86
+numpy==2.2.6
+scenedetect==0.6.5
