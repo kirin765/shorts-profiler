@@ -1,35 +1,66 @@
 # shorts-profiler MVP
 
-Short-form short video 구조 토큰화 및 프롬프트 생성 MVP. 로컬 우선 개발 환경을 기준으로 설계된 FastAPI + Redis/RQ + Postgres 아키텍처입니다.
+Local-first MVP for short-form video tokenization and prompt generation.
+Stack: FastAPI + Redis/RQ + Postgres.
 
-## 요구사항
+## Requirements
 
 - Python 3.11+
 - Docker + Docker Compose
 - `ffmpeg`
 - `tesseract-ocr`
 
-## 빠른 시작
+## Quick Start
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-API: `http://localhost:8000`
+API base: `http://localhost:8000`
 
-## 주요 엔드포인트
+The one-command flow is:
 
-- `POST /videos/upload` : 동영상 업로드
-  - `file` (multipart) 또는 `source_url`
-- `POST /jobs/analyze` : `{ "video_id": "..." }`
-- `GET /jobs/{job_id}` : 분석 상태/진행률
-- `GET /videos/{video_id}/tokens` : 토큰(JSON) 조회
-- `POST /videos/{video_id}/prompt` : `{ "target": "sora|seedance|script|all" }`
-- `GET /stats/summary` : 기간/카테고리/시간 구간 기반 집계
-- `GET /stats/patterns/top` : Top 패턴 조회
+1. PostgreSQL and Redis are started.
+2. API and worker containers are started.
+3. Open `http://localhost:8000` and use the minimal UI.
 
-## 로컬 실행 (비-Docker)
+## API list
+
+- `POST /videos/upload` : upload a file
+  - form-data: `file` and optional `category_tag`
+- `POST /videos/upload` : optional `source_url`
+- `POST /jobs/analyze` : request body `{ "video_id": "..." }`
+- `GET /jobs/{job_id}` : job status and progress
+- `GET /videos/{video_id}/tokens` : token JSON (schema v1.0)
+- `POST /videos/{video_id}/prompt` : body `{ "target": "sora|seedance|script|all" }`
+- `GET /stats/summary` : query filters `category_tag`, `start_date`, `end_date`, `duration_bucket`
+- `GET /stats/patterns/top` : query filters `category_tag`, `start_date`, `end_date`, `limit`
+
+## API examples
+
+```bash
+# 1) Upload
+curl -X POST "http://localhost:8000/videos/upload" -F "file=@sample.mp4" -F "category_tag=review"
+
+# 2) enqueue analyze
+curl -X POST "http://localhost:8000/jobs/analyze" -H "Content-Type: application/json" -d "{\"video_id\":\"<VIDEO_ID>\"}"
+
+# 3) job status
+curl -X GET "http://localhost:8000/jobs/<JOB_ID>"
+
+# 4) tokens
+curl -X GET "http://localhost:8000/videos/<VIDEO_ID>/tokens"
+
+# 5) prompts
+curl -X POST "http://localhost:8000/videos/<VIDEO_ID>/prompt" -H "Content-Type: application/json" -d "{\"target\":\"all\"}"
+
+# 6) summary + patterns
+curl -X GET "http://localhost:8000/stats/summary?category_tag=review&start_date=2026-01-01&end_date=2026-12-31&duration_bucket=0_10"
+curl -X GET "http://localhost:8000/stats/patterns/top?category_tag=review&limit=5"
+```
+
+## Local run (without Docker)
 
 ```bash
 python -m venv .venv
@@ -39,20 +70,20 @@ uvicorn app.api.main:app --reload
 rq worker shorts -u redis://localhost:6379/0
 ```
 
-## DB 마이그레이션
+## DB migration
 
 ```bash
 alembic upgrade head
 ```
 
-`migrations/versions/001_initial.py`를 통해 아래 스키마를 생성합니다.
+Generated tables from `migrations/versions/001_initial.py`:
 
 - `videos`
 - `jobs`
 - `tokens`
 - `prompts`
 
-## 토큰 스키마(요약)
+## Token schema (summary)
 
 - `schema_version`
 - `video_id`, `duration_sec`, `resolution`
@@ -64,25 +95,34 @@ alembic upgrade head
 - `structure`
 - `notes`
 
-원본 자막/프레임 텍스트/창작자 고유 문구는 출력에서 제외되고, 텍스트는 추상 통계로만 저장합니다.
+Raw OCR text is not exposed. Generated output stores only normalized summaries/statistics.
 
-## 최소 UI
+## Security rules
 
-`/`로 접속하면 업로드 / 분석 / 토큰 / 프롬프트 / 통계 화면이 표시됩니다.
+- No raw subtitles/text are returned in prompt output.
+- Prompt templates are generic and avoid repeated or identifying wording.
+- Creator-identifying elements are not included.
 
-## 제한 사항
+## Operations
 
-- ASR 미지원 (현재 버전은 Tesseract OCR + 시각/오디오 휴리스틱 기반)
-- 외부 동영상 직접 스크래핑/크롤링 없음
-- URL 업로드는 사용자가 제공한 URL만 처리
+```bash
+# check logs
+docker compose logs -f api
+docker compose logs -f worker
 
-## 업로드(원격 반영) 예시
+# health check
+curl -X GET "http://localhost:8000/health"
+```
+
+- Failed jobs are marked `status=failed` with `error` message, tokens are not generated.
+- OCR partial failures are written as warnings in `tokens.notes.warnings` and analysis continues.
+
+## Upload flow example
 
 ```bash
 git branch -M codex/shorts-profiler-mvp-20260303
 git add .
 git commit -m "feat: implement shorts-profiler mvp"
 git remote add origin https://github.com/kirin765/shorts-profiler.git
-# 최초 push
 git push -u origin codex/shorts-profiler-mvp-20260303
 ```
