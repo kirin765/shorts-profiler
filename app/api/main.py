@@ -145,7 +145,7 @@ def start_analyze(payload: AnalyzeRequest, db: Session = Depends(get_db)):
 
     q = _queue()
     try:
-    q.enqueue("app.worker.tasks.run_analysis", args=(payload.video_id, job_id), job_id=job_id)
+        q.enqueue("app.worker.tasks.run_analysis", args=(payload.video_id, job_id), job_id=job_id)
     except Exception as exc:
         job.status = "failed"
         job.error = str(exc)

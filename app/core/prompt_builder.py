@@ -1,3 +1,5 @@
+癤풾rom __future__ import annotations
+
 import random
 from typing import Any, Dict
 
@@ -21,15 +23,15 @@ SEEDANCE_BEAT_STYLE = [
 ]
 
 SCRIPT_OPENERS = [
-    "문제 제기 -> 핵심 장면 -> 해결/팁 -> 마무리 콜 투 액션",
-    "공감형 질문으로 시작하고 짧은 데모로 진행, 마지막엔 실행 행동 유도",
-    "숫자/단계 중심으로 정돈된 말풍선형 대본",
+    "Problem statement -> core scene -> fix/tip -> CTA closeout.",
+    "Start with a relatable hook and run short demonstrations, end with clear action guidance.",
+    "Number-driven, step-based outline with concise language.",
 ]
 
 CTA_TEMPLATES = [
-    "마무리는 공통 CTA로 정리: \"지금 바로 따라 해보세요.\"",
-    "마무리는 공유형 CTA로 정리: \"좋으면 저장하고 다음 영상을 위해 북마크하세요.\"",
-    "마무리는 행동형 CTA로 정리: \"함께 도전해보는 건 어떨까요?\"",
+    "CTA: End with a reusable action prompt for viewers.",
+    "CTA: End with a save/share reminder and next-step cue.",
+    "CTA: End with a polite, non-branded challenge invite.",
 ]
 
 
@@ -54,14 +56,15 @@ def build_sora_prompt(tokens: dict[str, Any]) -> str:
     cuts = float(editing.get("cuts_per_10s", 0) or 0)
     duration = float(tokens.get("duration_sec", 0) or 0)
 
-    text = """TITLE: Vertical short-form recreation draft\n"""
+    text = """TITLE: Vertical short-form recreation draft
+"""
     text += f"FORMAT: vertical, duration {duration:.1f}s\n"
-    text += f"VISUAL: {random.choice(SORA_VISUAL)} Subject framing: face presence ratio {visual.get('face_presence_ratio_est', 0):.2f}.\n"
+    text += f"VISUAL: {random.choice(SORA_VISUAL)} Subject framing ratio {visual.get('face_presence_ratio_est', 0):.2f}.\n"
     text += "BACKGROUND: " + str(visual.get("background_complexity", "mid")) + "\n"
     text += f"EDITING: {random.choice(SORA_EDITING).format(cuts_per_10s=cuts)} Zoom events: {editing.get('zoom_events_est', 0)}\n"
     text += f"TEXT OVERLAY: density {subtitle.get('density', 'mid')}, style {', '.join(subtitle.get('style_tags', [])) or 'minimal'}\n"
     text += f"AUDIO: BPM {audio.get('bpm_est', 0)} (est), energy {audio.get('energy_curve', 'flat')}\n"
-    text += "SCRIPT: concise, original Korean narration aligned with beat transitions.\n"
+    text += "SCRIPT: concise, original narration aligned with beat transitions.\n"
     text += f"HOOK type: {_safe_hook_type(tokens)}\n"
     text += f"CTA: {random.choice(CTA_TEMPLATES)}"
     return text
@@ -79,6 +82,7 @@ def build_seedance_prompt(tokens: dict[str, Any]) -> str:
             action_desc = "attention grab and tension setup"
         elif label == "CTA":
             action_desc = "clear generic CTA with spacing"
+
         line = random.choice(SEEDANCE_BEAT_STYLE).format(
             label=label,
             start=float(start),
@@ -87,8 +91,8 @@ def build_seedance_prompt(tokens: dict[str, Any]) -> str:
         )
         lines.append(line)
 
-    lines.append("\nTEXT: avoid exact quoted text, use generic rewritten on-screen copy.")
-    lines.append(CTA_TEMPLATES[0])
+    lines.append("\nTEXT: avoid verbatim extracted text; use rewritten copy only.")
+    lines.append("CTA: generic action reminder.")
     return "\n".join(lines)
 
 
@@ -98,10 +102,10 @@ def build_script_prompt(tokens: dict[str, Any]) -> str:
     beats = tokens.get("structure", {}).get("beats", [])
 
     lines = [
-        "스크립트/자막 플랜 (원문 텍스트 복제 없음)",
-        f"전체 길이: {duration:.1f}s",
-        f"컷 밀도: 10초당 {float(editing.get('cuts_per_10s', 0) or 0):.1f}",
-        "\n",
+        "Script plan (non-copyright, non-identifying)",
+        f"Total length: {duration:.1f}s",
+        f"Cut rhythm: {float(editing.get('cuts_per_10s', 0) or 0):.1f} per 10 seconds",
+        "",
     ]
 
     for beat in beats:
@@ -110,7 +114,7 @@ def build_script_prompt(tokens: dict[str, Any]) -> str:
         opener = random.choice(SCRIPT_OPENERS)
         lines.append(f"[{start:.1f}-{end:.1f}] {label}: {opener}")
 
-    lines.append("\n" + random.choice(CTA_TEMPLATES))
+    lines.append("\nCTA: apply a short closing challenge with one clear ask.")
     return "\n".join(lines)
 
 

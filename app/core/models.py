@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,16 +14,16 @@ class Video(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
-    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    category_tag: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    duration_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    category_tag: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     source_type: Mapped[str] = mapped_column(String(20), default="file")
-    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     jobs: Mapped[list["Job"]] = relationship(back_populates="video", cascade="all, delete-orphan")
-    tokens: Mapped["Tokens | None"] = relationship(back_populates="video", uselist=False, cascade="all, delete-orphan")
+    tokens: Mapped[Optional["Tokens"]] = relationship(back_populates="video", uselist=False, cascade="all, delete-orphan")
     prompts: Mapped[list["Prompt"]] = relationship(back_populates="video", cascade="all, delete-orphan")
 
     __table_args__ = (
@@ -38,9 +39,9 @@ class Job(Base):
     video_id: Mapped[str] = mapped_column(String(36), ForeignKey("videos.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     progress: Mapped[float] = mapped_column(Float, default=0)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     video: Mapped[Video] = relationship(back_populates="jobs")
 
