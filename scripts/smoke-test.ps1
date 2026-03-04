@@ -87,7 +87,7 @@ Write-Log "Uploading: $VideoPath"
 $uploadJson = Invoke-Upload -BaseUrl $BaseUrl -VideoPath $VideoPath -CategoryTag $CategoryTag
 $videoId = [string]$uploadJson.video_id
 if (-not $videoId) {
-    throw "upload response has no video_id: $($upload.Content)"
+    throw "upload response has no video_id: $($uploadJson | ConvertTo-Json -Compress)"
 }
 Write-Log "Video uploaded: video_id=$videoId"
 

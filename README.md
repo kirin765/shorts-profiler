@@ -63,7 +63,7 @@ curl -X GET "http://localhost:8000/stats/patterns/top?category_tag=review&limit=
 ## Smoke test (PowerShell)
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -VideoPath "C:\path\to\your\video.mp4"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\smoke-test.ps1 -VideoPath "C:\path\to\your\video.mp4"
 ```
 
 The script checks:
