@@ -32,17 +32,59 @@ function Invoke-Health {
     }
 }
 
+function Invoke-Upload {
+    param(
+        [string]$BaseUrl,
+        [string]$VideoPath,
+        [string]$CategoryTag
+    )
+
+    $uri = "$BaseUrl/videos/upload"
+    $filePath = (Resolve-Path $VideoPath).Path
+
+    $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curlExe -ne $null) {
+        $raw = & $curlExe.Source -s -X POST $uri -F "file=@$filePath" -F "category_tag=$CategoryTag"
+        if ($LASTEXITCODE -ne 0) {
+            throw "curl upload failed. code=$LASTEXITCODE body=$raw"
+        }
+        return $raw | ConvertFrom-Json
+    }
+
+    $client = $null
+    $form = $null
+    $fileStream = $null
+    $fileContent = $null
+    try {
+        $client = New-Object System.Net.Http.HttpClient
+        $form = New-Object System.Net.Http.MultipartFormDataContent
+        $fileStream = [System.IO.File]::OpenRead($filePath)
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new("application/octet-stream")
+        $form.Add($fileContent, "file", [System.IO.Path]::GetFileName($filePath))
+        $form.Add((New-Object System.Net.Http.StringContent($CategoryTag), "category_tag"))
+        $response = $client.PostAsync($uri, $form).GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            $err = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            throw "Upload failed ($($response.StatusCode)): $err"
+        }
+        $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        return $raw | ConvertFrom-Json
+    } finally {
+        if ($fileContent -ne $null) { $fileContent.Dispose() }
+        if ($form -ne $null) { $form.Dispose() }
+        if ($fileStream -ne $null) { $fileStream.Dispose() }
+        if ($client -ne $null) { $client.Dispose() }
+    }
+}
+
 Write-Log "Start smoke test"
 if (-not (Invoke-Health -BaseUrl $BaseUrl)) {
     throw "API not healthy. Start docker compose first: docker compose up --build -d"
 }
 
 Write-Log "Uploading: $VideoPath"
-$upload = Invoke-WebRequest -Method Post -Uri "$BaseUrl/videos/upload" -Form @{
-    file = Get-Item -Path $VideoPath
-    category_tag = $CategoryTag
-}
-$uploadJson = $upload.Content | ConvertFrom-Json
+$uploadJson = Invoke-Upload -BaseUrl $BaseUrl -VideoPath $VideoPath -CategoryTag $CategoryTag
 $videoId = [string]$uploadJson.video_id
 if (-not $videoId) {
     throw "upload response has no video_id: $($upload.Content)"
