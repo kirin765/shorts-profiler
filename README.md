@@ -235,6 +235,35 @@ Optional URL tests:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -VideoPath ".\storage\\sample.mp4" -YoutubeUrl "https://www.youtube.com/shorts/..." -TikTokUrl "https://www.tiktok.com/@..."
 ```
 
+### 9-1) Batch URL upload from CSV
+
+When you have many links, place URLs in one or more CSV files and run:
+
+CSV header examples:
+
+```csv
+source_url,category_tag
+https://youtu.be/...,batch
+https://www.tiktok.com/@...,batch
+```
+
+Supported columns:
+- `source_url` (required, `url` or `link` also accepted)
+- `category_tag` (optional)
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\batch-upload-from-csv.ps1 `
+  -CsvPaths ".\links1.csv",".\links2.csv" `
+  -BaseUrl "http://127.0.0.1:8000" `
+  -DefaultCategoryTag "batch"
+```
+
+Useful flags:
+- `-NoAnalyze` : only upload, do not enqueue analyze jobs
+- `-RetryCount N` : retry upload on failure
+- `-PollIntervalSeconds` / `-MaxWaitSeconds` : job wait tuning
+- `-ResultCsvPath` : output csv path (default auto-generated)
+
 ## 10) Troubleshooting
 
 - Health API fail: `docker compose logs -f api`
@@ -252,4 +281,3 @@ git commit -m "feat: implement shorts-profiler mvp"
 git remote add origin https://github.com/kirin765/shorts-profiler.git
 git push -u origin codex/shorts-profiler-mvp-YYYYMMDD
 ```
-
