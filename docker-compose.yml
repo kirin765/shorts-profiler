@@ -31,7 +31,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./storage:/app/storage
+      - storage:/app/storage
       - .:/app
     ports:
       - "8000:8000"
@@ -45,9 +45,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./storage:/app/storage
+      - storage:/app/storage
       - .:/app
     command: ["sh", "-c", "rq worker $${QUEUE_NAME} --url $${REDIS_URL}"]
 
 volumes:
   pgdata:
+  storage:
