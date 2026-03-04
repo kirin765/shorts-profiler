@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$VideoPath,
     [string]$YoutubeUrl = "",
@@ -31,6 +31,27 @@ function Invoke-Health {
     }
 }
 
+function Parse-UploadCurlResult {
+    param([string]$Raw)
+
+    $marker = "__HTTP_STATUS__"
+    $idx = $Raw.LastIndexOf($marker)
+    if ($idx -lt 0) {
+        throw "invalid curl response: $Raw"
+    }
+
+    $body = $Raw.Substring(0, $idx).Trim()
+    $tail = $Raw.Substring($idx + $marker.Length)
+    if ($tail -notmatch '(?s)^\s*(\d{3})\s*$') {
+        throw "invalid curl status suffix: $tail"
+    }
+
+    return @{
+        Body = $body
+        Status = [int]$Matches[1]
+    }
+}
+
 function Invoke-UploadFile {
     param(
         [string]$BaseUrl,
@@ -43,11 +64,15 @@ function Invoke-UploadFile {
 
     $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curlExe -ne $null) {
-        $raw = & $curlExe.Source -s -X POST $uri -F "file=@$filePath" -F "category_tag=$CategoryTag"
+        $raw = & $curlExe.Source --silent --show-error --location --write-out "`n__HTTP_STATUS__%{http_code}" -X POST $uri -F "file=@$filePath" -F "category_tag=$CategoryTag"
         if ($LASTEXITCODE -ne 0) {
             throw "curl upload failed. code=$LASTEXITCODE body=$raw"
         }
-        return $raw | ConvertFrom-Json
+        $parsed = Parse-UploadCurlResult -Raw $raw
+        if ($parsed.Status -lt 200 -or $parsed.Status -ge 300) {
+            throw "upload failed (HTTP $($parsed.Status)): $($parsed.Body)"
+        }
+        return $parsed.Body | ConvertFrom-Json
     }
 
     $client = [System.Net.Http.HttpClient]::new()
@@ -61,7 +86,7 @@ function Invoke-UploadFile {
         $response = $client.PostAsync($uri, $form).GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode) {
             $err = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            throw "Upload failed ($($response.StatusCode)): $err"
+            throw "upload failed ($($response.StatusCode)): $err"
         }
         $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         return $raw | ConvertFrom-Json
@@ -82,9 +107,35 @@ function Invoke-UploadUrl {
 
     $uri = "$BaseUrl/videos/upload"
     try {
-        return Invoke-RestMethod -Method Post -Uri $uri -Form @{ source_url = $SourceUrl; category_tag = $CategoryTag }
+        $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curlExe -ne $null) {
+            $raw = & $curlExe.Source --silent --show-error --location --write-out "`n__HTTP_STATUS__%{http_code}" -X POST $uri -F "source_url=$SourceUrl" -F "category_tag=$CategoryTag"
+            if ($LASTEXITCODE -ne 0) {
+                throw "curl upload failed. code=$LASTEXITCODE body=$raw"
+            }
+            $parsed = Parse-UploadCurlResult -Raw $raw
+            if ($parsed.Status -lt 200 -or $parsed.Status -ge 300) {
+                throw "upload failed (HTTP $($parsed.Status)): $($parsed.Body)"
+            }
+            return $parsed.Body | ConvertFrom-Json
+        }
+
+        $client = [System.Net.Http.HttpClient]::new()
+        $form = [System.Net.Http.MultipartFormDataContent]::new()
+        $form.Add([System.Net.Http.StringContent]::new($SourceUrl), "source_url")
+        $form.Add([System.Net.Http.StringContent]::new($CategoryTag), "category_tag")
+        $response = $client.PostAsync($uri, $form).GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            $err = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            throw "upload failed ($($response.StatusCode)): $err"
+        }
+        $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        return $raw | ConvertFrom-Json
     } catch {
         throw "URL upload failed: $($_.Exception.Message)"
+    } finally {
+        if ($form -ne $null) { $form.Dispose() }
+        if ($client -ne $null) { $client.Dispose() }
     }
 }
 
@@ -169,24 +220,43 @@ $results = @()
 
 Write-Log "Uploading file: $VideoPath"
 $uploadJson = Invoke-UploadFile -BaseUrl $BaseUrl -VideoPath $VideoPath -CategoryTag $CategoryTag
+if (-not ($uploadJson -and $uploadJson.PSObject.Properties.Name -contains 'video_id' -and $uploadJson.video_id)) {
+    throw "file upload response missing video_id"
+}
 $videoId = [string]$uploadJson.video_id
 $jobId = Invoke-Analyze -BaseUrl $BaseUrl -VideoId $videoId
 $results += [pscustomobject](Test-OneVideo -BaseUrl $BaseUrl -VideoId $videoId -JobId $jobId)
 
 if ($YoutubeUrl) {
     Write-Log "Uploading YouTube URL"
-    $uploadJson = Invoke-UploadUrl -BaseUrl $BaseUrl -SourceUrl $YoutubeUrl -CategoryTag "$CategoryTag-yt"
-    $videoId = [string]$uploadJson.video_id
-    $jobId = Invoke-Analyze -BaseUrl $BaseUrl -VideoId $videoId
-    $results += [pscustomobject](Test-OneVideo -BaseUrl $BaseUrl -VideoId $videoId -JobId $jobId)
+    try {
+        $uploadJson = Invoke-UploadUrl -BaseUrl $BaseUrl -SourceUrl $YoutubeUrl -CategoryTag "$CategoryTag-yt"
+        if ($uploadJson -and $uploadJson.PSObject.Properties.Name -contains 'video_id' -and $uploadJson.video_id) {
+            $videoId = [string]$uploadJson.video_id
+            $jobId = Invoke-Analyze -BaseUrl $BaseUrl -VideoId $videoId
+            $results += [pscustomobject](Test-OneVideo -BaseUrl $BaseUrl -VideoId $videoId -JobId $jobId)
+        } else {
+            Write-Host "WARNING: YouTube URL upload failed or returned no video_id; skipping."
+        }
+    } catch {
+        Write-Host "WARNING: YouTube URL upload failed: $($_.Exception.Message)"
+    }
 }
 
 if ($TikTokUrl) {
     Write-Log "Uploading TikTok URL"
-    $uploadJson = Invoke-UploadUrl -BaseUrl $BaseUrl -SourceUrl $TikTokUrl -CategoryTag "$CategoryTag-tt"
-    $videoId = [string]$uploadJson.video_id
-    $jobId = Invoke-Analyze -BaseUrl $BaseUrl -VideoId $videoId
-    $results += [pscustomobject](Test-OneVideo -BaseUrl $BaseUrl -VideoId $videoId -JobId $jobId)
+    try {
+        $uploadJson = Invoke-UploadUrl -BaseUrl $BaseUrl -SourceUrl $TikTokUrl -CategoryTag "$CategoryTag-tt"
+        if ($uploadJson -and $uploadJson.PSObject.Properties.Name -contains 'video_id' -and $uploadJson.video_id) {
+            $videoId = [string]$uploadJson.video_id
+            $jobId = Invoke-Analyze -BaseUrl $BaseUrl -VideoId $videoId
+            $results += [pscustomobject](Test-OneVideo -BaseUrl $BaseUrl -VideoId $videoId -JobId $jobId)
+        } else {
+            Write-Host "WARNING: TikTok URL upload failed or returned no video_id; skipping."
+        }
+    } catch {
+        Write-Host "WARNING: TikTok URL upload failed: $($_.Exception.Message)"
+    }
 }
 
 Write-Log "Fetch stats"
