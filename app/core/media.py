@@ -40,7 +40,7 @@ def _parse_ytdlp_args(extra_args: str) -> list[str]:
 def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     base = str(output_path.with_suffix(""))
-    ytdlp_args = _parse_ytdlp_args(settings.ytdlp_args)
+    ytdlp_args = _parse_ytdlp_args(settings.yt_dlp_args)
     cmd = [
         "yt-dlp",
         *ytdlp_args,
@@ -135,6 +135,113 @@ def sample_frames(video_path: Path, out_dir: Path, interval_sec: float, max_seco
         raise RuntimeError(f"ffmpeg frame extraction failed: {err.strip()}")
 
     return sorted(out_dir.glob("frame_*.jpg"))
+
+
+def sample_frame_at_timestamp(video_path: Path, out_file: Path, timestamp_sec: float) -> Path:
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        str(max(0.0, float(timestamp_sec))),
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(out_file),
+    ]
+    rc, _, err = _run_cmd(cmd)
+    if rc != 0 or not out_file.exists():
+        raise RuntimeError(f"ffmpeg frame capture failed at t={timestamp_sec}: {err.strip()}")
+
+    return out_file
+
+
+def sample_frames_at_timestamps(video_path: Path, out_dir: Path, timestamps: list[float]) -> list[tuple[Path, float]]:
+    ensure_dir(out_dir)
+    sampled: list[tuple[Path, float]] = []
+    seen: set[float] = set()
+    for idx, raw_ts in enumerate(sorted(set(float(t) for t in timestamps))):
+        ts = round(max(0.0, raw_ts), 3)
+        if ts in seen:
+            continue
+        seen.add(ts)
+        out_file = out_dir / f"frame_{idx:05d}.jpg"
+        try:
+            path = sample_frame_at_timestamp(video_path, out_file, ts)
+        except Exception:
+            continue
+        sampled.append((path, ts))
+    return sampled
+
+
+def _parse_tesseract_text_box_results(frame: Any, conf_threshold: float = 45.0) -> list[dict[str, Any]]:
+    data = pytesseract.image_to_data(
+        frame,
+        output_type=pytesseract.Output.DICT,
+        config="--psm 6",
+    )
+
+    h_img, w_img = frame.shape[:2]
+    n = len(data.get("text", []))
+    out: list[dict[str, Any]] = []
+    for i in range(n):
+        text = str(data["text"][i] or "").strip()
+        try:
+            conf = float(data["conf"][i])
+        except Exception:
+            conf = -1
+
+        if not text or conf < conf_threshold:
+            continue
+
+        x = int(data["left"][i] or 0)
+        y = int(data["top"][i] or 0)
+        w = int(data["width"][i] or 0)
+        h = int(data["height"][i] or 0)
+        if w <= 0 or h <= 0:
+            continue
+
+        norm = " ".join(text.split())
+        if len(norm) < 2:
+            continue
+
+        out.append(
+            {
+                "text": norm,
+                "conf": conf,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "frame_w": w_img,
+                "frame_h": h_img,
+            }
+        )
+    return out
+
+
+def extract_text_events_from_frames(
+    frames: list[tuple[Path, float]],
+    conf_threshold: float = 45.0,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for frame_path, t in frames:
+        img = cv2.imread(str(frame_path))
+        if img is None:
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        for det in _parse_tesseract_text_box_results(gray, conf_threshold):
+            record = {"t": float(t), **det}
+            out.append(record)
+
+    out.sort(key=lambda row: row["t"])
+    return out
 
 
 def detect_cuts_hist(frames: list[Path]) -> list[float]:

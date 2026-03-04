@@ -45,6 +45,7 @@ YT_DLP_ARGS=--format mp4 --no-check-certificate
 
 - `CLEANUP_SOURCE_VIDEO=true` (default): delete original uploaded video after analysis
 - `YT_DLP_ARGS`: optional args passed to yt-dlp
+- `ENABLE_ASR`: `false` default. Set true to enable optional speech-derived hints (`faster-whisper` installed required).
 
 For local development without Docker, adjust `DATABASE_URL`/`REDIS_URL` to host endpoints.
 
@@ -145,6 +146,73 @@ curl -X GET "http://127.0.0.1:8000/stats/patterns/top?category_tag=review&limit=
   - `CLEANUP_SOURCE_VIDEO=true` delete original mp4 after job finishes (pass/fail)
   - temporary artifacts (`frames_*`, `audio.wav`) are always deleted
 
+## 12) v1.0 token 확장
+
+- 기존 스키마(`1.0`)는 그대로 유지하고 확장 키를 `tokens_json` 내부에 추가합니다.
+  - `structure.shots`: 샷 기반 구조와 키프레임
+  - `text_events`: OCR 이벤트(요약 정보) 목록
+  - `extensions.audio`: ASR 기반(옵션) 파생 오디오 메타
+- `hook.hook_text_ocr`는 raw OCR 텍스트가 아니라 요약/키워드 기반 최대 500자입니다.
+- `notes.limitations`에는 OCR/ASR 미검출/실패 원인 정보를 남깁니다.
+- ASR은 `ENABLE_ASR` 옵션이며 의존성 없으면 경고 후 건너뜁니다.
+
+예시:
+
+```json
+{
+  "schema_version": "1.0",
+  "duration_sec": 12.4,
+  "structure": {
+    "beats": [
+      {"t": [0, 1.2], "label": "HOOK"},
+      {"t": [1.2, 3.2], "label": "EXPLAIN"},
+      {"t": [3.2, 10.2], "label": "STEPS"},
+      {"t": [10.2, 12.4], "label": "CTA"}
+    ],
+    "shots": [
+      {
+        "shot_id": 0,
+        "t0": 0.0,
+        "t1": 2.3,
+        "keyframes": [0.1, 1.15, 2.2],
+        "source": "scenedetect"
+      }
+    ]
+  },
+  "text_events": [
+    {
+      "t0": 0.1,
+      "t1": 0.4,
+      "role": "subtitle",
+      "position": "bottom",
+      "size_est": 0.07,
+      "style_tags": ["large_est", "bottom_bias"],
+      "derived": {
+        "keywords": ["list", "first", "tip"],
+        "has_number": false,
+        "text_type": "list",
+        "char_len_est": 12,
+        "density_est": "low"
+      }
+    }
+  ],
+  "extensions": {
+    "audio": {
+      "speech_ratio_est": 0.22,
+      "speech_segments": [
+        {
+          "t0": 0.7,
+          "t1": 1.5,
+          "confidence_est": -0.4,
+          "keywords": ["tip", "step"],
+          "intent_type": "statement"
+        }
+      ]
+    }
+  }
+}
+```
+
 ## 8) URL upload compatibility
 
 - Allowed hosts:
@@ -184,3 +252,4 @@ git commit -m "feat: implement shorts-profiler mvp"
 git remote add origin https://github.com/kirin765/shorts-profiler.git
 git push -u origin codex/shorts-profiler-mvp-YYYYMMDD
 ```
+
