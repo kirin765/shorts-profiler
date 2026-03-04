@@ -1,36 +1,46 @@
 from __future__ import annotations
 
-from datetime import datetime
-import shutil
+import csv
+import io
+import json
+import time
 import uuid
+from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from redis import Redis
 from rq import Queue
 from sqlalchemy.orm import Session
 
 from app.core import media
-from app.core.config import settings, videos_dir, tmp_dir
-from app.core.db import get_db
-from app.core.models import Job, Prompt, Tokens, Video
+from app.core.config import settings, videos_dir
+from app.core.db import SessionLocal, get_db
+from app.core.models import Job, JobLog, Prompt, Tokens, Video
+from app.core.prompt_builder import build_prompts
 from app.core.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
+    JobListItem,
+    JobListResponse,
+    JobLogItem,
+    JobLogsResponse,
     JobStatusResponse,
+    PromptItem,
     PromptRequest,
     PromptResponse,
     StatsSummaryResponse,
     TopPatternItem,
     TopPatternsResponse,
     TokensResponse,
+    UploadCsvItem,
+    UploadCsvResponse,
     UploadResponse,
+    VideoPromptsResponse,
 )
-from app.core.prompt_builder import build_prompts
-
 
 app = FastAPI(title="shorts-profiler", version="1.0.0")
 
@@ -38,7 +48,6 @@ app = FastAPI(title="shorts-profiler", version="1.0.0")
 @app.on_event("startup")
 def _startup() -> None:
     videos_dir().mkdir(parents=True, exist_ok=True)
-    tmp_dir().mkdir(parents=True, exist_ok=True)
 
 
 app.mount("/static", StaticFiles(directory="app/api/static", html=True), name="static")
@@ -111,6 +120,80 @@ def _read_json_body(db: Session, video_id: str) -> dict:
     return token_row.tokens_json
 
 
+def _safe_trim(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _append_job_log(
+    db: Session,
+    job_id: str,
+    step: str,
+    message: str,
+    level: str = "info",
+    metadata: dict | None = None,
+) -> None:
+    db.add(
+        JobLog(
+            job_id=job_id,
+            level=level,
+            step=step,
+            message=message,
+            meta=metadata,
+            created_at=datetime.utcnow(),
+        )
+    )
+
+
+def _enqueue_analysis(db: Session, video_id: str) -> str:
+    job_id = str(uuid.uuid4())
+    job = Job(id=job_id, video_id=video_id, status="queued", progress=0.0)
+    db.add(job)
+    db.flush()
+
+    _append_job_log(
+        db,
+        job_id,
+        "enqueue",
+        "analysis job queued",
+        "info",
+        {"video_id": video_id},
+    )
+
+    q = _queue()
+    q.enqueue("app.worker.tasks.run_analysis", args=(video_id, job_id), job_id=job_id)
+
+    _append_job_log(
+        db,
+        job_id,
+        "enqueue",
+        "analysis job sent to RQ",
+        "info",
+        {"queue": settings.queue_name},
+    )
+    db.commit()
+    return job_id
+
+
+def _parse_csv_url(row: dict) -> str:
+    for key in ("source_url", "url", "link"):
+        if key in row:
+            value = _safe_trim(str(row.get(key)))
+            if value:
+                return value
+    return ""
+
+
+def _parse_csv_category(row: dict, default_category_tag: str) -> str:
+    category = row.get("category_tag", "")
+    if not _safe_trim(str(category)):
+        category = row.get("category", "")
+    return _safe_trim(str(category) or default_category_tag)
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @app.post("/videos/upload", response_model=UploadResponse)
 def upload_video(
     file: UploadFile | None = File(default=None),
@@ -123,11 +206,13 @@ def upload_video(
 
     video_id = str(uuid.uuid4())
     target_path = videos_dir() / f"{video_id}.mp4"
-    source_url = (source_url or "").strip()
+    source_url = _safe_trim(source_url)
 
     if file is not None:
         _validate_extension(file.filename or "")
         with target_path.open("wb") as out:
+            import shutil
+
             shutil.copyfileobj(file.file, out)
         source_type = "file"
         source_ref = file.filename
@@ -140,6 +225,8 @@ def upload_video(
         try:
             downloaded = media.download_video_from_url_with_ytdlp(source_url, target_path)
             if downloaded != target_path:
+                import shutil
+
                 shutil.move(str(downloaded), str(target_path))
             source_type = "url"
             source_ref = source_url
@@ -149,7 +236,7 @@ def upload_video(
     video = Video(
         id=video_id,
         filename=target_path.name,
-        category_tag=category_tag,
+        category_tag=_safe_trim(category_tag),
         source_type=source_type,
         source_ref=source_ref,
     )
@@ -158,26 +245,151 @@ def upload_video(
     return UploadResponse(video_id=video_id)
 
 
+@app.post("/videos/upload-csv", response_model=UploadCsvResponse)
+def upload_csv(
+    csv_file: UploadFile = File(...),
+    default_category_tag: str = Form(default="batch"),
+    auto_analyze: bool = Form(default=True),
+    max_rows: int = Form(default=1000),
+    db: Session = Depends(get_db),
+):
+    if max_rows <= 0:
+        raise HTTPException(status_code=400, detail="max_rows must be greater than 0")
+
+    batch_id = str(uuid.uuid4())
+    accepted_rows = 0
+    invalid_rows = 0
+    items: list[UploadCsvItem] = []
+
+    raw = csv_file.file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from exc
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="invalid csv format: no header")
+
+    for row_index, row in enumerate(reader, start=1):
+        if row_index > max_rows:
+            invalid_rows += 1
+            items.append(
+                UploadCsvItem(
+                    row_index=row_index,
+                    source_url=_parse_csv_url(row),
+                    category_tag=_parse_csv_category(row, default_category_tag),
+                    status="failed",
+                    error="max_rows exceeded",
+                )
+            )
+            continue
+
+        source_url = _parse_csv_url(row)
+        category_tag = _parse_csv_category(row, default_category_tag)
+
+        if not source_url:
+            invalid_rows += 1
+            items.append(
+                UploadCsvItem(
+                    row_index=row_index,
+                    source_url=source_url,
+                    category_tag=category_tag,
+                    status="failed",
+                    error="missing source_url",
+                )
+            )
+            continue
+
+        if not _is_supported_source_url(source_url):
+            invalid_rows += 1
+            items.append(
+                UploadCsvItem(
+                    row_index=row_index,
+                    source_url=source_url,
+                    category_tag=category_tag,
+                    status="failed",
+                    error="unsupported source host",
+                )
+            )
+            continue
+
+        video_id = str(uuid.uuid4())
+        target_path = videos_dir() / f"{video_id}.mp4"
+
+        try:
+            downloaded = media.download_video_from_url_with_ytdlp(source_url, target_path)
+            if downloaded != target_path:
+                import shutil
+
+                shutil.move(str(downloaded), str(target_path))
+
+            db.add(
+                Video(
+                    id=video_id,
+                    filename=target_path.name,
+                    category_tag=category_tag,
+                    source_type="url",
+                    source_ref=source_url,
+                )
+            )
+            db.commit()
+
+            status = "uploaded"
+            job_id = None
+            error_message: str | None = None
+
+            if auto_analyze:
+                try:
+                    job_id = _enqueue_analysis(db, video_id)
+                    status = "queued"
+                except Exception as exc:
+                    db.rollback()
+                    status = "failed"
+                    error_message = f"enqueue failed: {exc}"
+
+            accepted_rows += 1
+            items.append(
+                UploadCsvItem(
+                    row_index=row_index,
+                    source_url=source_url,
+                    video_id=video_id,
+                    job_id=job_id,
+                    status=status,
+                    category_tag=category_tag,
+                    error=error_message,
+                )
+            )
+        except Exception as exc:
+            db.rollback()
+            invalid_rows += 1
+            items.append(
+                UploadCsvItem(
+                    row_index=row_index,
+                    source_url=source_url,
+                    category_tag=category_tag,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
+
+    return UploadCsvResponse(
+        batch_id=batch_id,
+        accepted_rows=accepted_rows,
+        invalid_rows=invalid_rows,
+        items=items,
+    )
+
+
 @app.post("/jobs/analyze", response_model=AnalyzeResponse)
 def start_analyze(payload: AnalyzeRequest, db: Session = Depends(get_db)):
-    video = db.query(Video).filter(Video.id == payload.video_id).first()
-    if not video:
+    if not db.query(Video).filter(Video.id == payload.video_id).first():
         raise HTTPException(status_code=404, detail="video not found")
 
-    job_id = str(uuid.uuid4())
-    job = Job(id=job_id, video_id=payload.video_id, status="queued", progress=0)
-    db.add(job)
-    db.commit()
-
-    q = _queue()
     try:
-        q.enqueue("app.worker.tasks.run_analysis", args=(payload.video_id, job_id), job_id=job_id)
+        job_id = _enqueue_analysis(db, payload.video_id)
     except Exception as exc:
-        job.status = "failed"
-        job.error = str(exc)
-        job.finished_at = datetime.utcnow()
-        db.commit()
-        raise HTTPException(status_code=500, detail="failed to enqueue analysis") from exc
+        raise HTTPException(status_code=500, detail=f"failed to enqueue analysis: {exc}") from exc
 
     return AnalyzeResponse(job_id=job_id)
 
@@ -194,6 +406,145 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
         progress=float(job.progress or 0.0),
         error=job.error,
     )
+
+
+@app.get("/jobs", response_model=JobListResponse)
+def list_jobs(
+    status: str | None = Query(default=None),
+    video_id: str | None = Query(default=None),
+    category_tag: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Job, Video.category_tag).join(Video, Video.id == Job.video_id)
+
+    if status:
+        query = query.filter(Job.status == status)
+    if video_id:
+        query = query.filter(Job.video_id == video_id)
+    if category_tag:
+        query = query.filter(Video.category_tag == category_tag)
+
+    total = query.count()
+    rows = (
+        query.order_by(Job.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items: list[JobListItem] = [
+        JobListItem(
+            job_id=job.id,
+            video_id=job.video_id,
+            status=job.status,
+            progress=float(job.progress or 0.0),
+            error=job.error,
+            created_at=(job.created_at or datetime.utcnow()).isoformat(),
+            updated_at=(job.updated_at.isoformat() if job.updated_at else None),
+            category_tag=job_category,
+        )
+        for job, job_category in rows
+    ]
+
+    return JobListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@app.get("/jobs/{job_id}/logs", response_model=JobLogsResponse)
+def list_job_logs(
+    job_id: str,
+    since_id: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    query = db.query(JobLog).filter(JobLog.job_id == job_id)
+    if since_id is not None:
+        query = query.filter(JobLog.id > since_id)
+
+    logs = query.order_by(JobLog.id.asc()).limit(limit).all()
+    next_id = logs[-1].id if logs else None
+
+    return JobLogsResponse(
+        job_id=job_id,
+        logs=[
+            JobLogItem(
+                id=log.id,
+                job_id=log.job_id,
+                level=log.level,
+                step=log.step,
+                message=log.message,
+                metadata=log.meta,
+                created_at=(log.created_at or datetime.utcnow()).isoformat(),
+            )
+            for log in logs
+        ],
+        next_id=next_id,
+    )
+
+
+@app.get("/jobs/{job_id}/stream")
+def stream_job(job_id: str, since_id: int | None = Query(default=None, ge=0)):
+    if since_id is None:
+        since_id = 0
+
+    def event_generator():
+        last_log_id = int(since_id)
+        last_status: tuple[str, float] | None = None
+
+        while True:
+            with SessionLocal() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if not job:
+                    yield _sse("error", {"job_id": job_id, "message": "job not found"})
+                    return
+
+                logs = (
+                    db.query(JobLog)
+                    .filter(JobLog.job_id == job_id, JobLog.id > last_log_id)
+                    .order_by(JobLog.id.asc())
+                    .limit(200)
+                    .all()
+                )
+                for log in logs:
+                    last_log_id = log.id
+                    yield _sse(
+                        "log",
+                        {
+                            "id": log.id,
+                            "job_id": log.job_id,
+                            "level": log.level,
+                            "step": log.step,
+                            "message": log.message,
+                            "metadata": log.meta,
+                            "created_at": (log.created_at or datetime.utcnow()).isoformat(),
+                        },
+                    )
+
+                status_payload = {
+                    "job_id": job.id,
+                    "status": job.status,
+                    "progress": float(job.progress or 0.0),
+                    "error": job.error,
+                    "updated_at": (job.updated_at or job.created_at or datetime.utcnow()).isoformat(),
+                }
+
+                status_key = (job.status, round(float(job.progress or 0.0), 3))
+                if last_status != status_key:
+                    last_status = status_key
+                    yield _sse("status", status_payload)
+
+                if job.status in {"done", "failed"}:
+                    return
+
+            yield _sse("heartbeat", {"alive": True})
+            time.sleep(1)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/videos/{video_id}/tokens", response_model=TokensResponse)
@@ -224,6 +575,32 @@ def build_prompt(video_id: str, payload: PromptRequest, db: Session = Depends(ge
     db.commit()
 
     return PromptResponse(video_id=video_id, targets=list(built.keys()), prompts=built)
+
+
+@app.get("/videos/{video_id}/prompts", response_model=VideoPromptsResponse)
+def get_video_prompts(video_id: str, db: Session = Depends(get_db)):
+    if not db.query(Video).filter(Video.id == video_id).first():
+        raise HTTPException(status_code=404, detail="video not found")
+
+    rows = (
+        db.query(Prompt)
+        .filter(Prompt.video_id == video_id)
+        .order_by(Prompt.created_at.desc(), Prompt.id.desc())
+        .all()
+    )
+
+    return VideoPromptsResponse(
+        video_id=video_id,
+        prompts=[
+            PromptItem(
+                id=r.id,
+                target=r.target,
+                prompt_text=r.prompt_text,
+                created_at=(r.created_at or datetime.utcnow()).isoformat(),
+            )
+            for r in rows
+        ],
+    )
 
 
 @app.get("/stats/summary", response_model=StatsSummaryResponse)

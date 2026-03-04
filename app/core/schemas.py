@@ -73,3 +73,66 @@ class TopPatternItem(BaseModel):
 
 class TopPatternsResponse(BaseModel):
     top_patterns: list[TopPatternItem]
+
+
+class UploadCsvItem(BaseModel):
+    row_index: int
+    source_url: str
+    video_id: str | None = None
+    job_id: str | None = None
+    status: str
+    category_tag: str | None = None
+    error: str | None = None
+
+
+class UploadCsvResponse(BaseModel):
+    batch_id: str
+    accepted_rows: int
+    invalid_rows: int
+    items: list[UploadCsvItem]
+
+
+class JobListItem(BaseModel):
+    job_id: str
+    video_id: str
+    status: str
+    progress: float
+    error: str | None
+    created_at: str
+    updated_at: str | None
+    category_tag: str | None = None
+
+
+class JobListResponse(BaseModel):
+    items: list[JobListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class JobLogItem(BaseModel):
+    id: int
+    job_id: str
+    level: str
+    step: str
+    message: str
+    metadata: dict | None = None
+    created_at: str
+
+
+class JobLogsResponse(BaseModel):
+    job_id: str
+    logs: list[JobLogItem]
+    next_id: int | None
+
+
+class PromptItem(BaseModel):
+    id: int
+    target: str
+    prompt_text: str
+    created_at: str
+
+
+class VideoPromptsResponse(BaseModel):
+    video_id: str
+    prompts: list[PromptItem]

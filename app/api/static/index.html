@@ -1,9 +1,9 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Shorts Profiler</title>
+    <title>shorts-profiler v2</title>
     <style>
       :root {
         --bg: linear-gradient(180deg, #050714, #111827);
@@ -11,8 +11,12 @@
         --text: #f5f7ff;
         --muted: #a7b1c7;
         --accent: #22d3ee;
+        --accent-2: #38bdf8;
+        --danger: #f43f5e;
+        --ok: #22c55e;
         --border: #273047;
       }
+
       body {
         margin: 0;
         color: var(--text);
@@ -20,33 +24,55 @@
         font-family: 'Trebuchet MS', 'Noto Sans KR', sans-serif;
         padding: 24px;
       }
+
       .grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
       }
+
       .card {
         border: 1px solid var(--border);
-        border-radius: 16px;
-        background: rgba(17, 24, 39, 0.7);
+        border-radius: 14px;
+        background: rgba(17, 24, 39, 0.72);
         padding: 16px;
       }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
       h1,
       h3 {
         margin-top: 0;
       }
+
+      label {
+        display: block;
+        margin-top: 10px;
+        margin-bottom: 4px;
+        color: var(--muted);
+      }
+
       input,
       button,
-      select {
+      select,
+      textarea {
         width: 100%;
-        margin-top: 8px;
         margin-bottom: 8px;
         padding: 10px;
         border-radius: 10px;
         border: 1px solid #283248;
         background: #0f172a;
         color: #f1f5f9;
+        box-sizing: border-box;
       }
+
+      input[type='checkbox'] {
+        width: auto;
+        margin: 0;
+      }
+
       button {
         background: var(--accent);
         color: #020617;
@@ -54,16 +80,76 @@
         cursor: pointer;
         font-weight: 700;
       }
+
+      .secondary {
+        background: #1e293b;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+      }
+
+      .danger {
+        background: var(--danger);
+      }
+
       pre {
         white-space: pre-wrap;
         background: #0f172a;
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 10px;
-        min-height: 180px;
+        min-height: 160px;
+        max-height: 340px;
         overflow: auto;
       }
-      @media (max-width: 900px) {
+
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+        min-height: 22px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #26304a;
+        vertical-align: top;
+      }
+
+      .tag {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+      }
+
+      .t-queued { background: #312e81; color: #bfdbfe; }
+      .t-running { background: #0f766e; color: #99f6e4; }
+      .t-done { background: #14532d; color: #bbf7d0; }
+      .t-failed { background: #7f1d1d; color: #fecaca; }
+
+      .toolbar {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
+      .row > * { flex: 1; }
+
+      @media (max-width: 1100px) {
         .grid {
           grid-template-columns: 1fr;
         }
@@ -71,12 +157,12 @@
     </style>
   </head>
   <body>
-    <h1>shorts-profiler MVP</h1>
-    <p style="color:var(--muted);">Upload a file or URL, run analysis, then check tokens/prompt/stats.</p>
+    <h1>shorts-profiler v2</h1>
+    <p style="color:var(--muted);">CSV batch, queue monitor, real-time logs, and per-video prompt viewer.</p>
 
     <div class="grid">
       <div class="card">
-        <h3>1) Upload</h3>
+        <h3>1) Single upload</h3>
         <form id="upload-form">
           <label>Local file</label>
           <input type="file" id="file" accept="video/*" />
@@ -89,49 +175,123 @@
 
           <button type="submit">Upload</button>
         </form>
+        <div class="meta" id="upload-meta"></div>
         <pre id="upload-result">-</pre>
       </div>
 
       <div class="card">
-        <h3>2) Analyze</h3>
-        <label>video_id</label>
-        <input id="an-video-id" />
-        <button id="analyze-btn">Start Analysis</button>
+        <h3>1-b) CSV upload</h3>
+        <form id="upload-csv-form">
+          <label>CSV file (header required)</label>
+          <input id="csv-file" type="file" accept=".csv" />
 
-        <label>job_id</label>
-        <input id="job-id" />
-        <button id="job-btn">Check status</button>
-        <pre id="job-result">-</pre>
+          <label>default_category_tag</label>
+          <input id="default-category-tag" value="batch" />
+
+          <label>max_rows</label>
+          <input id="max-rows" type="number" min="1" value="1000" />
+
+          <label>
+            <span style="display: inline-flex; gap: 6px; align-items: center;">
+              <input id="auto-analyze" type="checkbox" checked /> auto_analyze
+            </span>
+          </label>
+
+          <button type="submit">Upload CSV</button>
+        </form>
+        <div class="meta" id="upload-csv-meta"></div>
+        <pre id="upload-csv-result">-</pre>
       </div>
 
       <div class="card">
-        <h3>3) Tokens / Prompt</h3>
-        <label>video_id</label>
-        <input id="token-video" />
-        <button id="tokens-btn">Load tokens</button>
+        <h3>2) Job queue / status</h3>
+        <div class="toolbar">
+          <input id="an-video-id" placeholder="video_id" />
+          <button id="analyze-btn">Start analyze</button>
+          <input id="job-id" placeholder="job_id" />
+          <button id="job-btn">Check status</button>
+        </div>
 
-        <label>Prompt target</label>
-        <input id="prompt-target" list="prompt-target-options" value="all" />
-        <datalist id="prompt-target-options">
-          <option value="all"></option>
-          <option value="sora"></option>
-          <option value="seedance"></option>
-          <option value="script"></option>
-          <option value="gpt-4o-mini"></option>
-        </datalist>
-        <button id="prompt-btn">Generate prompt</button>
+        <div class="row">
+          <input id="jobs-filter-status" placeholder="status" />
+          <input id="jobs-filter-video" placeholder="video_id" />
+          <input id="jobs-filter-category" placeholder="category_tag" />
+        </div>
+        <div class="row">
+          <input id="jobs-filter-limit" type="number" min="1" max="500" value="100" />
+          <button id="jobs-refresh-btn">Refresh jobs</button>
+          <button id="jobs-auto-btn" class="secondary" data-state="off">Auto 3s: OFF</button>
+        </div>
+
+        <pre id="job-result">-</pre>
+        <div style="max-height: 260px; overflow: auto; margin-top: 8px;">
+          <table>
+            <thead>
+              <tr>
+                <th>video_id</th>
+                <th>job_id</th>
+                <th>status</th>
+                <th>progress</th>
+                <th>category</th>
+                <th>updated</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>3) Realtime job logs</h3>
+        <div class="row">
+          <input id="stream-job-id" placeholder="job_id" />
+          <button id="stream-open-btn" class="secondary">Open stream</button>
+          <button id="stream-close-btn" class="danger">Close</button>
+        </div>
+        <div class="meta" id="stream-state"></div>
+        <pre id="job-logs">-</pre>
+        <input id="logs-poll-job-id" placeholder="job_id for /logs" />
+        <button id="logs-poll-btn" class="secondary">Poll logs once</button>
+        <pre id="job-logs-poll">-</pre>
+      </div>
+
+      <div class="card full">
+        <h3>4) Tokens / prompts</h3>
+        <div class="toolbar">
+          <input id="token-video" placeholder="video_id" />
+          <button id="tokens-btn">Load tokens</button>
+          <select id="prompt-target">
+            <option value="all">all</option>
+            <option value="sora">sora</option>
+            <option value="seedance">seedance</option>
+            <option value="script">script</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="custom-model">custom-model</option>
+          </select>
+          <button id="prompt-btn">Generate prompt</button>
+        </div>
+        <div class="toolbar">
+          <button id="prompt-list-btn">Load prompt history</button>
+        </div>
+
         <pre id="token-result">-</pre>
       </div>
 
-      <div class="card">
-        <h3>4) Stats</h3>
-        <button id="summary-btn">Load summary</button>
+      <div class="card full">
+        <h3>5) Stats</h3>
+        <div class="row">
+          <button id="summary-btn">Load summary</button>
+          <button id="patterns-btn" class="secondary">Load top patterns</button>
+        </div>
         <pre id="stats-result">-</pre>
       </div>
     </div>
 
     <script>
       const $ = (id) => document.getElementById(id);
+      let eventSource = null;
+      let autoJobsTimer = null;
+      let autoJobsOn = false;
 
       const safeJson = async (res) => {
         if (!res.ok) {
@@ -139,6 +299,13 @@
           throw new Error(text || `HTTP ${res.status}`);
         }
         return await res.json();
+      };
+
+      const formatLog = (entry) => {
+        if (entry instanceof Object) {
+          return `${entry.created_at} [${entry.level}] ${entry.step}: ${entry.message}`;
+        }
+        return String(entry);
       };
 
       $('upload-form').addEventListener('submit', async (e) => {
@@ -153,18 +320,49 @@
         }
 
         const form = new FormData();
-        if (file) form.append('file', file);
-        if (url) form.append('source_url', url);
-        if (category) form.append('category_tag', category);
+        if (file) {
+          form.append('file', file);
+        }
+        if (url) {
+          form.append('source_url', url);
+        }
+        if (category) {
+          form.append('category_tag', category);
+        }
 
         const res = await fetch('/videos/upload', { method: 'POST', body: form });
         const data = await safeJson(res);
         $('upload-result').textContent = JSON.stringify(data, null, 2);
+        $('upload-meta').textContent = `video_id=${data.video_id}`;
+      });
+
+      $('upload-csv-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const file = $('csv-file').files[0];
+        if (!file) {
+          alert('CSV file required');
+          return;
+        }
+
+        const form = new FormData();
+        form.append('csv_file', file);
+        form.append('default_category_tag', $('default-category-tag').value.trim() || 'batch');
+        form.append('auto_analyze', $('auto-analyze').checked ? 'true' : 'false');
+        form.append('max_rows', $('max-rows').value || '1000');
+
+        const res = await fetch('/videos/upload-csv', { method: 'POST', body: form });
+        const data = await safeJson(res);
+        $('upload-csv-result').textContent = JSON.stringify(data, null, 2);
+        $('upload-csv-meta').textContent = `batch=${data.batch_id}, accepted=${data.accepted_rows}, invalid=${data.invalid_rows}`;
+        await loadJobs();
       });
 
       $('analyze-btn').onclick = async () => {
         const video_id = $('an-video-id').value.trim();
-        if (!video_id) return alert('video_id required');
+        if (!video_id) {
+          alert('video_id required');
+          return;
+        }
         const res = await fetch('/jobs/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -172,18 +370,58 @@
         });
         const data = await safeJson(res);
         $('job-id').value = data.job_id;
+        $('stream-job-id').value = data.job_id;
         $('job-result').textContent = JSON.stringify(data, null, 2);
+        await loadJobs();
       };
 
       $('job-btn').onclick = async () => {
         const job_id = $('job-id').value.trim();
+        if (!job_id) return;
         const res = await fetch(`/jobs/${encodeURIComponent(job_id)}`);
         const data = await safeJson(res);
         $('job-result').textContent = JSON.stringify(data, null, 2);
       };
 
+      $('jobs-refresh-btn').onclick = async () => {
+        await loadJobs();
+      };
+
+      $('jobs-auto-btn').onclick = () => {
+        autoJobsOn = !autoJobsOn;
+        if (autoJobsTimer) clearInterval(autoJobsTimer);
+        const btn = $('jobs-auto-btn');
+        if (autoJobsOn) {
+          btn.textContent = 'Auto 3s: ON';
+          btn.classList.add('danger');
+          autoJobsTimer = setInterval(loadJobs, 3000);
+        } else {
+          btn.textContent = 'Auto 3s: OFF';
+          btn.classList.remove('danger');
+        }
+      };
+
+      $('stream-open-btn').onclick = () => {
+        const job_id = $('stream-job-id').value.trim();
+        if (!job_id) return;
+        openStream(job_id);
+      };
+
+      $('stream-close-btn').onclick = () => {
+        closeStream();
+      };
+
+      $('logs-poll-btn').onclick = async () => {
+        const job_id = $('logs-poll-job-id').value.trim() || $('stream-job-id').value.trim();
+        if (!job_id) return;
+        const res = await fetch(`/jobs/${encodeURIComponent(job_id)}/logs`);
+        const data = await safeJson(res);
+        $('job-logs-poll').textContent = JSON.stringify(data, null, 2);
+      };
+
       $('tokens-btn').onclick = async () => {
         const video_id = $('token-video').value.trim();
+        if (!video_id) return;
         const res = await fetch(`/videos/${encodeURIComponent(video_id)}/tokens`);
         const data = await safeJson(res);
         $('token-result').textContent = JSON.stringify(data, null, 2);
@@ -192,6 +430,7 @@
       $('prompt-btn').onclick = async () => {
         const video_id = $('token-video').value.trim();
         const target = $('prompt-target').value.trim() || 'all';
+        if (!video_id) return;
         const res = await fetch(`/videos/${encodeURIComponent(video_id)}/prompt`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -199,6 +438,108 @@
         });
         const data = await safeJson(res);
         $('token-result').textContent = JSON.stringify(data, null, 2);
+        await loadPromptList();
+      };
+
+      $('prompt-list-btn').onclick = async () => {
+        await loadPromptList();
+      };
+
+      const loadPromptList = async () => {
+        const video_id = $('token-video').value.trim();
+        if (!video_id) return;
+        const res = await fetch(`/videos/${encodeURIComponent(video_id)}/prompts`);
+        const data = await safeJson(res);
+        $('token-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      const loadJobs = async () => {
+        const status = $('jobs-filter-status').value.trim();
+        const video_id = $('jobs-filter-video').value.trim();
+        const category = $('jobs-filter-category').value.trim();
+        const limit = parseInt($('jobs-filter-limit').value || '100', 10);
+
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+        if (video_id) params.set('video_id', video_id);
+        if (category) params.set('category_tag', category);
+        params.set('limit', String(limit));
+
+        const res = await fetch(`/jobs?${params.toString()}`);
+        const data = await safeJson(res);
+        const tbody = $('jobs-body');
+        tbody.innerHTML = '';
+
+        data.items.forEach((item) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${item.video_id}</td>
+            <td>${item.job_id}</td>
+            <td><span class="tag t-${item.status}">${item.status}</span></td>
+            <td>${item.progress.toFixed(1)}</td>
+            <td>${item.category_tag || ''}</td>
+            <td>${item.updated_at || item.created_at}</td>
+          `;
+          tr.style.cursor = 'pointer';
+          tr.onclick = () => {
+            $('job-id').value = item.job_id;
+            $('stream-job-id').value = item.job_id;
+            $('logs-poll-job-id').value = item.job_id;
+            $('job-result').textContent = JSON.stringify(item, null, 2);
+          };
+          tbody.appendChild(tr);
+        });
+
+        if (!data.items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="color:#94a3b8">no jobs</td></tr>';
+        }
+      };
+
+      const openStream = (jobId) => {
+        closeStream();
+        const source = new EventSource(`/jobs/${encodeURIComponent(jobId)}/stream`);
+        const logPre = $('job-logs');
+        logPre.textContent = '';
+        $('stream-state').textContent = 'stream open';
+
+        source.addEventListener('status', (ev) => {
+          const payload = JSON.parse(ev.data);
+          logPre.textContent += `[status] ${payload.updated_at} status=${payload.status} progress=${payload.progress}\n`;
+          if (payload.status === 'done' || payload.status === 'failed') {
+            logPre.textContent += `finished: ${payload.status}\n`;
+            source.close();
+            $('stream-state').textContent = `stream closed (${payload.status})`;
+            loadJobs();
+          }
+        });
+
+        source.addEventListener('log', (ev) => {
+          const payload = JSON.parse(ev.data);
+          logPre.textContent += `${formatLog(payload)}\n`;
+          logPre.scrollTop = logPre.scrollHeight;
+          loadJobs();
+        });
+
+        source.addEventListener('heartbeat', () => {
+          $('stream-state').textContent = `stream open (${jobId})`;
+        });
+
+        source.onerror = () => {
+          $('stream-state').textContent = 'stream error/closed';
+          if (source.readyState === EventSource.CLOSED) {
+            closeStream();
+          }
+        };
+
+        eventSource = source;
+      };
+
+      const closeStream = () => {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        $('stream-state').textContent = 'stream closed';
       };
 
       $('summary-btn').onclick = async () => {
@@ -206,6 +547,14 @@
         const data = await safeJson(res);
         $('stats-result').textContent = JSON.stringify(data, null, 2);
       };
+
+      $('patterns-btn').onclick = async () => {
+        const res = await fetch('/stats/patterns/top?limit=10');
+        const data = await safeJson(res);
+        $('stats-result').textContent = JSON.stringify(data, null, 2);
+      };
+
+      loadJobs();
     </script>
   </body>
 </html>

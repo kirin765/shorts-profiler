@@ -15,7 +15,7 @@ from app.analysis.text_events import (
 )
 from app.core.config import settings, tmp_dir, videos_dir
 from app.core.db import SessionLocal
-from app.core.models import Job, Tokens, Video
+from app.core.models import Job, JobLog, Tokens, Video
 from app.core.token_schemas import TokensSchemaV1
 from app.core import media
 
@@ -36,8 +36,33 @@ def _update_job(db, job_id: str, status: str | None = None, progress: float | No
         job.started_at = datetime.utcnow()
     if status in {"done", "failed"} and job.finished_at is None:
         job.finished_at = datetime.utcnow()
+    job.updated_at = datetime.utcnow()
 
     db.commit()
+
+
+def _append_job_log(
+    db,
+    job_id: str,
+    step: str,
+    message: str,
+    level: str = "info",
+    metadata: dict | None = None,
+) -> None:
+    try:
+        db.add(
+            JobLog(
+                job_id=job_id,
+                level=level,
+                step=step,
+                message=message,
+                meta=metadata,
+                created_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _infer_hook_type(total_chars: int, density: str, cuts_per_10: float) -> str:
@@ -204,6 +229,7 @@ def run_analysis(video_id: str, job_id: str) -> dict:
     job = None
 
     try:
+        _append_job_log(db, job_id, "runner", "analysis worker started", "info")
         _update_job(db, job_id, status="running", progress=3.0)
 
         video = db.query(Video).filter(Video.id == video_id).first()
@@ -215,9 +241,17 @@ def run_analysis(video_id: str, job_id: str) -> dict:
             raise ValueError(f"job {job_id} not found")
 
         if not source_path.exists():
+            _append_job_log(
+                db,
+                job_id,
+                "source",
+                "source media missing for job",
+                "error",
+            )
             raise ValueError(f"source video missing: {source_path}")
 
         warnings: list[str] = []
+        _append_job_log(db, job_id, "ffprobe", "starting ffprobe metadata extraction", "info")
         meta = media.ffprobe_info(source_path)
         video.duration_sec = float(meta.get("duration_sec", 0.0) or 0.0)
         video.width = meta.get("width")
@@ -228,6 +262,7 @@ def run_analysis(video_id: str, job_id: str) -> dict:
             warnings.append("duration missing from ffprobe")
 
         _update_job(db, job_id, progress=10.0)
+        _append_job_log(db, job_id, "shots", "building shot boundaries", "info")
         shots = build_shots(source_path, duration_sec=duration, frame_fallback_interval=0.5)
         shot_times: list[float] = []
         for shot in shots:
@@ -248,12 +283,27 @@ def run_analysis(video_id: str, job_id: str) -> dict:
         raw_first3 = media.extract_text_events_from_frames(first3_with_time)
         if not raw_first3 and duration > 0:
             warnings.append("first3-seconds dense sampling returned no text detections")
+            _append_job_log(
+                db,
+                job_id,
+                "ocr",
+                "first3 OCR scan returned no usable text detections",
+                "warn",
+            )
         else:
             first3_events = build_text_events(raw_first3, duration_sec=duration)
             if sum(1 for e in first3_events if e["t1"] - e["t0"] > 0) >= 3:
                 warnings.append("early-exit triggered: first3 text-events reached threshold")
+                _append_job_log(
+                    db,
+                    job_id,
+                    "ocr",
+                    "early-exit after first3 text-event threshold",
+                    "info",
+                )
 
         _update_job(db, job_id, progress=35.0)
+        _append_job_log(db, job_id, "ocr", "scanning shot keyframes for text events", "info")
         raw_shot_events = media.extract_text_events_from_frames(shot_frames)
 
         all_raw_events = raw_shot_events + raw_first3
@@ -262,6 +312,13 @@ def run_analysis(video_id: str, job_id: str) -> dict:
         position_map, subtitle_present, total_chars, _ = build_position_stats(text_events)
         if not text_events:
             warnings.append("text-events skipped: OCR unreadable or too sparse")
+            _append_job_log(
+                db,
+                job_id,
+                "ocr",
+                "no text events detected in shot/keyframes",
+                "warn",
+            )
 
         hook_text_ocr = summarize_hook_from_events(text_events)
 
@@ -273,6 +330,7 @@ def run_analysis(video_id: str, job_id: str) -> dict:
         density = _safe_bucket(total_chars / max(duration, 1.0))
 
         _update_job(db, job_id, progress=52.0)
+        _append_job_log(db, job_id, "visual", "estimating face presence and background complexity", "info")
         all_visual_refs = [frame for frame, _ in shot_frames]
         if not all_visual_refs:
             all_visual_refs = first3_candidates
@@ -280,16 +338,19 @@ def run_analysis(video_id: str, job_id: str) -> dict:
         bg_complexity = media.estimate_background_complexity(all_visual_refs)
 
         _update_job(db, job_id, progress=74.0)
+        _append_job_log(db, job_id, "audio", "extracting audio features", "info")
         audio_wav = work_dir / "audio.wav"
         has_audio, bpm_est, energy_curve, silence_ratio = media.extract_audio_metrics(source_path, audio_wav)
 
         _update_job(db, job_id, progress=82.0)
+        _append_job_log(db, job_id, "audio", "running optional ASR pipeline", "info")
         asr_output = generate_speech_segments(audio_wav, enable_asr=settings.enable_asr and bool(has_audio))
         warnings.extend(asr_output.get("warnings", []))
         extensions = asr_output.get("extensions", {})
         hook_spoken_summary = asr_output.get("hook_spoken_summary")
 
         _update_job(db, job_id, progress=90.0)
+        _append_job_log(db, job_id, "save", "building and validating tokens payload", "info")
         cut_count = max(0, len(shots) - 1)
         avg_shot_len = (duration / cut_count) if cut_count > 0 else duration
         cuts_per_10 = (cut_count / duration) * 10.0 if duration > 0 else 0.0
@@ -327,6 +388,7 @@ def run_analysis(video_id: str, job_id: str) -> dict:
 
         if not subtitle_present:
             warnings.append("subtitle likely absent or unreadable")
+            _append_job_log(db, job_id, "analysis", "subtitle markers were not present", "warn")
 
         token_row = db.query(Tokens).filter(Tokens.video_id == video_id).first()
         if token_row:
@@ -337,11 +399,20 @@ def run_analysis(video_id: str, job_id: str) -> dict:
             db.add(Tokens(video_id=video_id, schema_version="1.0", tokens_json=tokens_json))
 
         _update_job(db, job_id, status="done", progress=100.0)
+        _append_job_log(db, job_id, "done", "analysis completed", "info")
         db.commit()
         return tokens_json
 
     except Exception as exc:
         if job is not None:
+            _append_job_log(
+                db,
+                job_id,
+                "error",
+                "analysis failed",
+                "error",
+                {"error": str(exc)},
+            )
             _update_job(
                 db,
                 job_id,

@@ -37,17 +37,36 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     video_id: Mapped[str] = mapped_column(String(36), ForeignKey("videos.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     progress: Mapped[float] = mapped_column(Float, default=0)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     video: Mapped[Video] = relationship(back_populates="jobs")
 
     __table_args__ = (
         Index("ix_jobs_video_id", "video_id"),
         Index("ix_jobs_status", "status"),
+        Index("ix_jobs_updated_at", "updated_at"),
+    )
+
+
+class JobLog(Base):
+    __tablename__ = "job_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), default="info")
+    step: Mapped[str] = mapped_column(String(80), default="analysis")
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    meta: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_job_logs_job_id_created_at", "job_id", "created_at"),
     )
 
 

@@ -100,11 +100,36 @@ curl -X POST "http://127.0.0.1:8000/jobs/analyze" -H "Content-Type: application/
 curl -X GET "http://127.0.0.1:8000/jobs/<JOB_ID>"
 ```
 
+- Batch URL upload (CSV)
+
+```bash
+# csv header: source_url,category_tag
+curl -X POST "http://127.0.0.1:8000/videos/upload-csv" \
+  -F "csv_file=@links.csv;type=text/csv" \
+  -F "default_category_tag=batch" \
+  -F "auto_analyze=true" \
+  -F "max_rows=1000"
+```
+
+- Job list / logs / stream
+
+```bash
+curl -X GET "http://127.0.0.1:8000/jobs?status=queued&limit=50"
+curl -X GET "http://127.0.0.1:8000/jobs/<JOB_ID>/logs"
+curl -N "http://127.0.0.1:8000/jobs/<JOB_ID>/stream"
+```
+
+- Prompt history
+
+```bash
+curl -X GET "http://127.0.0.1:8000/videos/<VIDEO_ID>/prompts"
+```
+
 - Tokens
 
 ```bash
 curl -X GET "http://127.0.0.1:8000/videos/<VIDEO_ID>/tokens"
-```
+``` 
 
 - Prompt (model-specific)
 
