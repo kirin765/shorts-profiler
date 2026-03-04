@@ -32,7 +32,6 @@ services:
         condition: service_healthy
     volumes:
       - storage:/app/storage
-      - .:/app
     ports:
       - "8000:8000"
     command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
@@ -46,7 +45,6 @@ services:
         condition: service_healthy
     volumes:
       - storage:/app/storage
-      - .:/app
     command: ["sh", "-c", "rq worker $${QUEUE_NAME} --url $${REDIS_URL}"]
 
 volumes:
