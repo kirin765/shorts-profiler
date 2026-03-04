@@ -5,6 +5,7 @@ from pathlib import Path
 from statistics import median
 import shlex
 from typing import Any
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -37,24 +38,82 @@ def _parse_ytdlp_args(extra_args: str) -> list[str]:
     return shlex.split(extra_args.strip()) if extra_args else []
 
 
-def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    base = str(output_path.with_suffix(""))
-    ytdlp_args = _parse_ytdlp_args(settings.yt_dlp_args)
-    cmd = [
+def _is_tiktok_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "tiktok.com" or host == "www.tiktok.com" or host == "vm.tiktok.com" or host.endswith(".tiktok.com")
+
+
+def _build_ytdlp_base_cmd(output_path: Path, url: str) -> list[list[str]]:
+    output = str(output_path.with_suffix(""))
+    base = [
         "yt-dlp",
-        *ytdlp_args,
         "--merge-output-format",
         "mp4",
         "-o",
-        f"{base}.%(ext)s",
+        f"{output}.%(ext)s",
         url,
     ]
-    rc, out, err = _run_cmd(cmd)
-    if rc != 0:
-        raise RuntimeError(f"yt-dlp failed: {err.strip() or out.strip()}")
 
-    output_file = Path(f"{base}.mp4")
+    ytdlp_args = _parse_ytdlp_args(settings.yt_dlp_args)
+    base[1:1] = ytdlp_args
+
+    attempts = [base]
+
+    if _is_tiktok_url(url):
+        attempts.append(
+            [
+                "yt-dlp",
+                *ytdlp_args,
+                "--extractor-args",
+                "tiktok:api_hostname=api16-h2.tiktokv.com",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                f"{output}.%(ext)s",
+                url,
+            ]
+        )
+        attempts.append(
+            [
+                "yt-dlp",
+                *ytdlp_args,
+                "--extractor-args",
+                "tiktok:api_hostname=api22-h2.tiktokv.com",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                f"{output}.%(ext)s",
+                url,
+            ]
+        )
+    return attempts
+
+
+def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_base = str(output_path.with_suffix(""))
+    attempts = _build_ytdlp_base_cmd(output_path, url)
+
+    last_err = ""
+    for attempt_idx, cmd in enumerate(attempts, start=1):
+        # remove stale outputs for retries
+        for stale in output_path.parent.glob(f"{output_path.stem}.*"):
+            if stale.is_file():
+                stale.unlink(missing_ok=True)
+
+        rc, out, err = _run_cmd(cmd)
+        if rc == 0:
+            break
+        last_err = err.strip() or out.strip()
+        if attempt_idx < len(attempts):
+            continue
+        raise RuntimeError(f"yt-dlp failed: {last_err}")
+
+    output_file = Path(f"{output_base}.mp4")
     if output_file.exists():
         return output_file
 
@@ -69,8 +128,8 @@ def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
         try:
             shutil.move(str(downloaded), converted)
             return converted
-        except Exception:
-            raise RuntimeError(f"unexpected output file extension: {downloaded.name}")
+        except Exception as e:
+            raise RuntimeError(f"unexpected output file extension: {downloaded.name}") from e
     return downloaded
 
 
