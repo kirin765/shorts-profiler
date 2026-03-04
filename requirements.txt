@@ -9,7 +9,7 @@ python-multipart==0.0.20
 redis==5.2.1
 rq==2.0.0
 python-dotenv==1.1.0
-yt-dlp==2025.03.31
+yt-dlp==2026.3.3
 pytesseract==0.3.13
 opencv-python-headless==4.11.0.86
 numpy==2.2.6
