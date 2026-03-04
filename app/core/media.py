@@ -3,11 +3,15 @@ import shutil
 import subprocess
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable
+import shlex
+from typing import Any
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
 import pytesseract
+
+from app.core.config import settings
 
 
 def _run_cmd(cmd: list[str]) -> tuple[int, str, str]:
@@ -28,6 +32,105 @@ def ensure_dir(path: Path) -> None:
 def cleanup_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
+
+
+def _parse_ytdlp_args(extra_args: str) -> list[str]:
+    return shlex.split(extra_args.strip()) if extra_args else []
+
+
+def _is_tiktok_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "tiktok.com" or host == "www.tiktok.com" or host == "vm.tiktok.com" or host.endswith(".tiktok.com")
+
+
+def _build_ytdlp_base_cmd(output_path: Path, url: str) -> list[list[str]]:
+    output = str(output_path.with_suffix(""))
+    base = [
+        "yt-dlp",
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        f"{output}.%(ext)s",
+        url,
+    ]
+
+    ytdlp_args = _parse_ytdlp_args(settings.yt_dlp_args)
+    base[1:1] = ytdlp_args
+
+    attempts = [base]
+
+    if _is_tiktok_url(url):
+        attempts.append(
+            [
+                "yt-dlp",
+                *ytdlp_args,
+                "--extractor-args",
+                "tiktok:api_hostname=api16-h2.tiktokv.com",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                f"{output}.%(ext)s",
+                url,
+            ]
+        )
+        attempts.append(
+            [
+                "yt-dlp",
+                *ytdlp_args,
+                "--extractor-args",
+                "tiktok:api_hostname=api22-h2.tiktokv.com",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                f"{output}.%(ext)s",
+                url,
+            ]
+        )
+    return attempts
+
+
+def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_base = str(output_path.with_suffix(""))
+    attempts = _build_ytdlp_base_cmd(output_path, url)
+
+    last_err = ""
+    for attempt_idx, cmd in enumerate(attempts, start=1):
+        # remove stale outputs for retries
+        for stale in output_path.parent.glob(f"{output_path.stem}.*"):
+            if stale.is_file():
+                stale.unlink(missing_ok=True)
+
+        rc, out, err = _run_cmd(cmd)
+        if rc == 0:
+            break
+        last_err = err.strip() or out.strip()
+        if attempt_idx < len(attempts):
+            continue
+        raise RuntimeError(f"yt-dlp failed: {last_err}")
+
+    output_file = Path(f"{output_base}.mp4")
+    if output_file.exists():
+        return output_file
+
+    # fallback for odd ext if remux not applied
+    candidates = sorted(output_path.parent.glob(output_path.stem + ".*"))
+    if not candidates:
+        raise RuntimeError("yt-dlp finished but output file not found")
+
+    downloaded = candidates[0]
+    if downloaded.suffix.lower() != ".mp4":
+        converted = output_file
+        try:
+            shutil.move(str(downloaded), converted)
+            return converted
+        except Exception as e:
+            raise RuntimeError(f"unexpected output file extension: {downloaded.name}") from e
+    return downloaded
 
 
 def ffprobe_info(video_path: Path) -> dict[str, Any]:
@@ -93,6 +196,113 @@ def sample_frames(video_path: Path, out_dir: Path, interval_sec: float, max_seco
     return sorted(out_dir.glob("frame_*.jpg"))
 
 
+def sample_frame_at_timestamp(video_path: Path, out_file: Path, timestamp_sec: float) -> Path:
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        str(max(0.0, float(timestamp_sec))),
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(out_file),
+    ]
+    rc, _, err = _run_cmd(cmd)
+    if rc != 0 or not out_file.exists():
+        raise RuntimeError(f"ffmpeg frame capture failed at t={timestamp_sec}: {err.strip()}")
+
+    return out_file
+
+
+def sample_frames_at_timestamps(video_path: Path, out_dir: Path, timestamps: list[float]) -> list[tuple[Path, float]]:
+    ensure_dir(out_dir)
+    sampled: list[tuple[Path, float]] = []
+    seen: set[float] = set()
+    for idx, raw_ts in enumerate(sorted(set(float(t) for t in timestamps))):
+        ts = round(max(0.0, raw_ts), 3)
+        if ts in seen:
+            continue
+        seen.add(ts)
+        out_file = out_dir / f"frame_{idx:05d}.jpg"
+        try:
+            path = sample_frame_at_timestamp(video_path, out_file, ts)
+        except Exception:
+            continue
+        sampled.append((path, ts))
+    return sampled
+
+
+def _parse_tesseract_text_box_results(frame: Any, conf_threshold: float = 45.0) -> list[dict[str, Any]]:
+    data = pytesseract.image_to_data(
+        frame,
+        output_type=pytesseract.Output.DICT,
+        config="--psm 6",
+    )
+
+    h_img, w_img = frame.shape[:2]
+    n = len(data.get("text", []))
+    out: list[dict[str, Any]] = []
+    for i in range(n):
+        text = str(data["text"][i] or "").strip()
+        try:
+            conf = float(data["conf"][i])
+        except Exception:
+            conf = -1
+
+        if not text or conf < conf_threshold:
+            continue
+
+        x = int(data["left"][i] or 0)
+        y = int(data["top"][i] or 0)
+        w = int(data["width"][i] or 0)
+        h = int(data["height"][i] or 0)
+        if w <= 0 or h <= 0:
+            continue
+
+        norm = " ".join(text.split())
+        if len(norm) < 2:
+            continue
+
+        out.append(
+            {
+                "text": norm,
+                "conf": conf,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "frame_w": w_img,
+                "frame_h": h_img,
+            }
+        )
+    return out
+
+
+def extract_text_events_from_frames(
+    frames: list[tuple[Path, float]],
+    conf_threshold: float = 45.0,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for frame_path, t in frames:
+        img = cv2.imread(str(frame_path))
+        if img is None:
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        for det in _parse_tesseract_text_box_results(gray, conf_threshold):
+            record = {"t": float(t), **det}
+            out.append(record)
+
+    out.sort(key=lambda row: row["t"])
+    return out
+
+
 def detect_cuts_hist(frames: list[Path]) -> list[float]:
     if len(frames) < 2:
         return []
@@ -137,14 +347,17 @@ def estimate_cuts(video_path: Path, frames: list[Path], duration: float) -> list
     return detect_cuts_hist(frames)
 
 
-def extract_text_frames(frames: list[Path]) -> tuple[int, dict[str, float], bool, list[str]]:
+def extract_text_frames(
+    frames: list[Path], max_text_chars: int = 500
+) -> tuple[int, dict[str, float], bool, list[str], str | None]:
     if not frames:
         return 0, {"top": 0.0, "middle": 0.0, "bottom": 0.0}, False, []
 
     total_chars = 0
     present_count = 0
     position_hits = {"top": 0, "middle": 0, "bottom": 0}
-    subtitles: list[str] = []
+    subtitle_texts: list[str] = []
+    hook_candidates: list[str] = []
 
     for frame_path in frames:
         img = cv2.imread(str(frame_path))
@@ -188,14 +401,21 @@ def extract_text_frames(frames: list[Path]) -> tuple[int, dict[str, float], bool
 
             total_chars += len(text)
             present_count += 1
-            if len(text) >= 4:
-                subtitles.append(text)
+            norm = " ".join(text.split())
+            if len(norm) >= 4:
+                subtitle_texts.append(norm)
+                hook_candidates.append(norm)
 
     total_frames = max(len(frames), 1)
     position_ratio = {
         k: v / total_frames for k, v in position_hits.items()
     }
-    return total_chars, position_ratio, present_count > 0, subtitles
+    # remove duplicates while preserving order
+    deduped = list(dict.fromkeys(hook_candidates))
+    hook_text = " | ".join(deduped) if deduped else None
+    if hook_text and len(hook_text) > max_text_chars:
+        hook_text = hook_text[:max_text_chars]
+    return total_chars, position_ratio, present_count > 0, subtitle_texts, hook_text
 
 
 def estimate_face_presence(frames: list[Path]) -> tuple[float, float]:

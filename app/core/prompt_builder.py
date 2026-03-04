@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import random
 from typing import Any, Dict
@@ -34,9 +34,72 @@ CTA_TEMPLATES = [
     "CTA: End with a polite, non-branded challenge invite.",
 ]
 
+GENERIC_SECTIONS = [
+    "Start with a short emotional hook before revealing value.",
+    "Keep rhythm-driven transitions tied to visual changes.",
+    "Prioritize safe, non-identifying language and avoid verbatim text reuse.",
+]
+
+GENERIC_CTA_HINTS = [
+    "CTA: end with one clear micro-action (save, follow, or comment).",
+    "CTA: close with a simple generic ask and one timing cue.",
+    "CTA: keep it short and non-branded with one final directive.",
+]
+
 
 def _safe_hook_type(tokens: dict[str, Any]) -> str:
     return str((tokens.get("hook") or {}).get("hook_type") or "other")
+
+
+def _shots_section(tokens: dict[str, Any]) -> str:
+    shots = (tokens.get("structure") or {}).get("shots")
+    if not isinstance(shots, list) or not shots:
+        return ""
+
+    lines = ["SHOT STORYBOARD:"]
+    for shot in shots[:8]:
+        shot_id = shot.get("shot_id", "?")
+        t0 = float(shot.get("t0", 0.0) or 0.0)
+        t1 = float(shot.get("t1", 0.0) or 0.0)
+        keyframes = shot.get("keyframes", [])
+        lines.append(
+            f"- shot {shot_id}: {t0:.1f}-{t1:.1f}s, {len(keyframes)} keyframes"
+        )
+    return "\n".join(lines)
+
+
+def _text_events_section(tokens: dict[str, Any]) -> str:
+    events = tokens.get("text_events")
+    if not isinstance(events, list) or not events:
+        return ""
+
+    lines = ["TEXT EVENTS:"]
+    for event in events[:10]:
+        derived = event.get("derived", {})
+        lines.append(
+            f"- {float(event.get('t0', 0.0)):.1f}-{float(event.get('t1', 0.0)):.1f}s "
+            f"[{event.get('role', 'overlay')}/{event.get('position', 'middle')}] "
+            f"{derived.get('text_type', 'unknown')}: {', '.join(derived.get('keywords', []))}"
+        )
+    return "\n".join(lines)
+
+
+def _audio_section(tokens: dict[str, Any]) -> str:
+    audio_ext = (tokens.get("extensions") or {}).get("audio", {})
+    if not isinstance(audio_ext, dict) or not audio_ext:
+        return ""
+
+    lines = ["AUDIO SIGNALING:"]
+    ratio = audio_ext.get("speech_ratio_est")
+    if ratio is not None:
+        lines.append(f"- speech ratio: {float(ratio):.2f}")
+
+    for seg in audio_ext.get("speech_segments", [])[:4]:
+        lines.append(
+            f"- {float(seg.get('t0', 0.0)):.1f}-{float(seg.get('t1', 0.0)):.1f}s "
+            f"{seg.get('intent_type', 'unknown')}: {', '.join(seg.get('keywords', []))}"
+        )
+    return "\n".join(lines)
 
 
 def _format_beat_list(beats: list[dict[str, Any]]) -> str:
@@ -66,6 +129,15 @@ def build_sora_prompt(tokens: dict[str, Any]) -> str:
     text += f"AUDIO: BPM {audio.get('bpm_est', 0)} (est), energy {audio.get('energy_curve', 'flat')}\n"
     text += "SCRIPT: concise, original narration aligned with beat transitions.\n"
     text += f"HOOK type: {_safe_hook_type(tokens)}\n"
+    shot_section = _shots_section(tokens)
+    if shot_section:
+        text += "\n" + shot_section + "\n"
+    event_section = _text_events_section(tokens)
+    if event_section:
+        text += event_section + "\n"
+    audio_section = _audio_section(tokens)
+    if audio_section:
+        text += audio_section + "\n"
     text += f"CTA: {random.choice(CTA_TEMPLATES)}"
     return text
 
@@ -92,6 +164,15 @@ def build_seedance_prompt(tokens: dict[str, Any]) -> str:
         lines.append(line)
 
     lines.append("\nTEXT: avoid verbatim extracted text; use rewritten copy only.")
+    shot_section = _shots_section(tokens)
+    if shot_section:
+        lines.append(shot_section)
+    event_section = _text_events_section(tokens)
+    if event_section:
+        lines.append(event_section)
+    audio_section = _audio_section(tokens)
+    if audio_section:
+        lines.append(audio_section)
     lines.append("CTA: generic action reminder.")
     return "\n".join(lines)
 
@@ -114,7 +195,60 @@ def build_script_prompt(tokens: dict[str, Any]) -> str:
         opener = random.choice(SCRIPT_OPENERS)
         lines.append(f"[{start:.1f}-{end:.1f}] {label}: {opener}")
 
+    shot_section = _shots_section(tokens)
+    if shot_section:
+        lines.append("")
+        lines.append(shot_section)
+    event_section = _text_events_section(tokens)
+    if event_section:
+        lines.append("")
+        lines.append(event_section)
+    audio_section = _audio_section(tokens)
+    if audio_section:
+        lines.append("")
+        lines.append(audio_section)
     lines.append("\nCTA: apply a short closing challenge with one clear ask.")
+    return "\n".join(lines)
+
+
+def build_generic_model_prompt(tokens: dict[str, Any], model_name: str) -> str:
+    model_name = (model_name or "custom-model").strip()
+    duration = float(tokens.get("duration_sec", 0) or 0)
+    editing = tokens.get("editing", {})
+    beats = tokens.get("structure", {}).get("beats", [])
+    visual = tokens.get("visual", {})
+    subtitle = tokens.get("subtitle", {})
+    audio = tokens.get("audio", {})
+
+    lines = [
+        f"Generic prompt for model: {model_name}",
+        f"Duration: {duration:.1f}s",
+        f"Visual complexity: {visual.get('background_complexity', 'mid')} / faces: {visual.get('face_presence_ratio_est', 0):.2f}",
+        "",
+    ]
+
+    lines.append("Section rules:")
+    lines.extend([f"- {random.choice(GENERIC_SECTIONS)}" for _ in range(2)])
+    lines.append("")
+
+    lines.append("Beat sequence:")
+    for beat in beats:
+        start, end = beat.get("t", [0, 0])
+        lines.append(f"- [{start:.1f} - {end:.1f}] {beat.get('label', 'BLOCK')}: keep concise and transition-focused")
+
+    lines.append("")
+    lines.append(f"Text treatment: density {subtitle.get('density', 'mid')}, avoid exact OCR strings.")
+    shot_section = _shots_section(tokens)
+    if shot_section:
+        lines.append(shot_section)
+    event_section = _text_events_section(tokens)
+    if event_section:
+        lines.append(event_section)
+    audio_section = _audio_section(tokens)
+    if audio_section:
+        lines.append(audio_section)
+    lines.append(f"Edit rhythm: {float(editing.get('cuts_per_10s', 0) or 0):.1f} cuts per 10s, estimated BPM {audio.get('bpm_est', 0)}")
+    lines.append(random.choice(GENERIC_CTA_HINTS))
     return "\n".join(lines)
 
 
@@ -125,9 +259,12 @@ def build_prompts(tokens: dict[str, Any], target: str) -> Dict[str, str]:
         return {"seedance": build_seedance_prompt(tokens)}
     if target == "script":
         return {"script": build_script_prompt(tokens)}
+    if target == "all":
+        return {
+            "sora": build_sora_prompt(tokens),
+            "seedance": build_seedance_prompt(tokens),
+            "script": build_script_prompt(tokens),
+        }
 
-    return {
-        "sora": build_sora_prompt(tokens),
-        "seedance": build_seedance_prompt(tokens),
-        "script": build_script_prompt(tokens),
-    }
+    return {target: build_generic_model_prompt(tokens, target)}
+

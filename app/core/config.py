@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -11,6 +12,12 @@ class Settings(BaseSettings):
     video_bucket_path: str = "videos"
     tmp_path: str = "tmp"
     queue_name: str = "shorts"
+    cleanup_source_video: bool = True
+    enable_asr: bool = False
+    yt_dlp_args: str = Field(
+        default="--format mp4 --no-check-certificate",
+        alias="YT_DLP_ARGS",
+    )
 
     class Config:
         env_file = ".env"
