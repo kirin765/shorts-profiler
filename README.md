@@ -60,6 +60,22 @@ curl -X GET "http://localhost:8000/stats/summary?category_tag=review&start_date=
 curl -X GET "http://localhost:8000/stats/patterns/top?category_tag=review&limit=5"
 ```
 
+## Smoke test (PowerShell)
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -VideoPath "C:\path\to\your\video.mp4"
+```
+
+The script checks:
+- API health
+- upload
+- analyze queue
+- token generation
+- prompt generation (`all`)
+- summary/pattern stats
+
+Outputs compact JSON with `video_id`, `job_id`, and token/prompt summary.
+
 ## Local run (without Docker)
 
 ```bash
