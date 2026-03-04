@@ -34,6 +34,18 @@ CTA_TEMPLATES = [
     "CTA: End with a polite, non-branded challenge invite.",
 ]
 
+GENERIC_SECTIONS = [
+    "Start with a short emotional hook before revealing value.",
+    "Keep rhythm-driven transitions tied to visual changes.",
+    "Prioritize safe, non-identifying language and avoid verbatim text reuse.",
+]
+
+GENERIC_CTA_HINTS = [
+    "CTA: end with one clear micro-action (save, follow, or comment).",
+    "CTA: close with a simple generic ask and one timing cue.",
+    "CTA: keep it short and non-branded with one final directive.",
+]
+
 
 def _safe_hook_type(tokens: dict[str, Any]) -> str:
     return str((tokens.get("hook") or {}).get("hook_type") or "other")
@@ -118,6 +130,38 @@ def build_script_prompt(tokens: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_generic_model_prompt(tokens: dict[str, Any], model_name: str) -> str:
+    model_name = (model_name or "custom-model").strip()
+    duration = float(tokens.get("duration_sec", 0) or 0)
+    editing = tokens.get("editing", {})
+    beats = tokens.get("structure", {}).get("beats", [])
+    visual = tokens.get("visual", {})
+    subtitle = tokens.get("subtitle", {})
+    audio = tokens.get("audio", {})
+
+    lines = [
+        f"Generic prompt for model: {model_name}",
+        f"Duration: {duration:.1f}s",
+        f"Visual complexity: {visual.get('background_complexity', 'mid')} / faces: {visual.get('face_presence_ratio_est', 0):.2f}",
+        "",
+    ]
+
+    lines.append("Section rules:")
+    lines.extend([f"- {random.choice(GENERIC_SECTIONS)}" for _ in range(2)])
+    lines.append("")
+
+    lines.append("Beat sequence:")
+    for beat in beats:
+        start, end = beat.get("t", [0, 0])
+        lines.append(f"- [{start:.1f} - {end:.1f}] {beat.get('label', 'BLOCK')}: keep concise and transition-focused")
+
+    lines.append("")
+    lines.append(f"Text treatment: density {subtitle.get('density', 'mid')}, avoid exact OCR strings.")
+    lines.append(f"Edit rhythm: {float(editing.get('cuts_per_10s', 0) or 0):.1f} cuts per 10s, estimated BPM {audio.get('bpm_est', 0)}")
+    lines.append(random.choice(GENERIC_CTA_HINTS))
+    return "\n".join(lines)
+
+
 def build_prompts(tokens: dict[str, Any], target: str) -> Dict[str, str]:
     if target == "sora":
         return {"sora": build_sora_prompt(tokens)}
@@ -125,9 +169,11 @@ def build_prompts(tokens: dict[str, Any], target: str) -> Dict[str, str]:
         return {"seedance": build_seedance_prompt(tokens)}
     if target == "script":
         return {"script": build_script_prompt(tokens)}
+    if target == "all":
+        return {
+            "sora": build_sora_prompt(tokens),
+            "seedance": build_seedance_prompt(tokens),
+            "script": build_script_prompt(tokens),
+        }
 
-    return {
-        "sora": build_sora_prompt(tokens),
-        "seedance": build_seedance_prompt(tokens),
-        "script": build_script_prompt(tokens),
-    }
+    return {target: build_generic_model_prompt(tokens, target)}

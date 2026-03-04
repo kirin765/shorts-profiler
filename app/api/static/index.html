@@ -1,5 +1,5 @@
-<!doctype html>
-<html lang="ko">
+癤�<!doctype html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -72,58 +72,60 @@
   </head>
   <body>
     <h1>shorts-profiler MVP</h1>
-    <p style="color:var(--muted);">동영상 업로드 후 분석을 실행하고 토큰/프롬프트/통계를 확인하세요.</p>
+    <p style="color:var(--muted);">Upload a file or URL, run analysis, then check tokens/prompt/stats.</p>
 
     <div class="grid">
       <div class="card">
-        <h3>1) 업로드</h3>
+        <h3>1) Upload</h3>
         <form id="upload-form">
-          <label>로컬 파일</label>
+          <label>Local file</label>
           <input type="file" id="file" accept="video/*" />
 
-          <label>또는 URL (선택)</label>
+          <label>or URL (YouTube / TikTok)</label>
           <input id="url" placeholder="https://..." />
 
-          <label>카테고리</label>
-          <input id="category" placeholder="예: cooking" />
+          <label>Category</label>
+          <input id="category" placeholder="ex: cooking" />
 
-          <button type="submit">업로드</button>
+          <button type="submit">Upload</button>
         </form>
         <pre id="upload-result">-</pre>
       </div>
 
       <div class="card">
-        <h3>2) 분석 시작</h3>
+        <h3>2) Analyze</h3>
         <label>video_id</label>
         <input id="an-video-id" />
-        <button id="analyze-btn">분석 시작</button>
+        <button id="analyze-btn">Start Analysis</button>
 
         <label>job_id</label>
         <input id="job-id" />
-        <button id="job-btn">상태 조회</button>
+        <button id="job-btn">Check status</button>
         <pre id="job-result">-</pre>
       </div>
 
       <div class="card">
-        <h3>3) 토큰 / 프롬프트</h3>
+        <h3>3) Tokens / Prompt</h3>
         <label>video_id</label>
         <input id="token-video" />
-        <button id="tokens-btn">토큰 조회</button>
+        <button id="tokens-btn">Load tokens</button>
 
-        <label>프롬프트 타입</label>
-        <select id="prompt-target">
-          <option value="all">all</option>
-          <option value="sora">sora</option>
-          <option value="seedance">seedance</option>
-          <option value="script">script</option>
-        </select>
-        <button id="prompt-btn">프롬프트 생성</button>
+        <label>Prompt target</label>
+        <input id="prompt-target" list="prompt-target-options" value="all" />
+        <datalist id="prompt-target-options">
+          <option value="all"></option>
+          <option value="sora"></option>
+          <option value="seedance"></option>
+          <option value="script"></option>
+          <option value="gpt-4o-mini"></option>
+        </datalist>
+        <button id="prompt-btn">Generate prompt</button>
         <pre id="token-result">-</pre>
       </div>
 
       <div class="card">
-        <h3>4) 통계</h3>
-        <button id="summary-btn">요약 통계 조회</button>
+        <h3>4) Stats</h3>
+        <button id="summary-btn">Load summary</button>
         <pre id="stats-result">-</pre>
       </div>
     </div>
@@ -146,7 +148,7 @@
         const category = $('category').value.trim();
 
         if (!file && !url) {
-          alert('파일 또는 URL 중 하나는 필요합니다.');
+          alert('file or url is required');
           return;
         }
 
@@ -162,7 +164,7 @@
 
       $('analyze-btn').onclick = async () => {
         const video_id = $('an-video-id').value.trim();
-        if (!video_id) return alert('video_id 입력');
+        if (!video_id) return alert('video_id required');
         const res = await fetch('/jobs/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -189,7 +191,7 @@
 
       $('prompt-btn').onclick = async () => {
         const video_id = $('token-video').value.trim();
-        const target = $('prompt-target').value;
+        const target = $('prompt-target').value.trim() || 'all';
         const res = await fetch(`/videos/${encodeURIComponent(video_id)}/prompt`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

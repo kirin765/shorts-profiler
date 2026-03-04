@@ -1,144 +1,186 @@
-# shorts-profiler MVP
+# shorts-profiler
 
-Local-first MVP for short-form video tokenization and prompt generation.
-Stack: FastAPI + Redis/RQ + Postgres.
+Local-first FastAPI + Redis/RQ + Postgres MVP for short-form video analysis.
 
-## Requirements
+## 1) What this repo does
+
+- Uploads videos by file or YouTube/TikTok URL
+- Runs async analysis in RQ worker
+- Stores structured tokens (schema v1.0), no raw OCR/creator-identifiable text
+- Generates prompts only when requested
+- Provides simple aggregated statistics APIs
+
+## 2) Architecture
+
+- `app/api`: FastAPI endpoints
+- `app/core`: media util, settings, models, schemas, prompt builder
+- `app/worker`: RQ worker tasks
+- `migrations`: Alembic migration files
+- `storage/videos`, `storage/tmp`: media and temporary work files
+
+## 3) Requirements
 
 - Python 3.11+
 - Docker + Docker Compose
-- `ffmpeg`
-- `tesseract-ocr`
+- ffmpeg
+- tesseract-ocr
+- yt-dlp
+- Postgres, Redis (docker-compose will start both)
 
-## Quick Start
+## 4) Environment variables
+
+Example `.env`:
+
+```env
+APP_ENV=development
+DATABASE_URL=postgresql+psycopg2://shorts:shorts@postgres:5432/shorts_profiler
+REDIS_URL=redis://redis:6379/0
+STORAGE_PATH=./storage
+VIDEO_BUCKET_PATH=videos
+TMP_PATH=tmp
+QUEUE_NAME=shorts
+CLEANUP_SOURCE_VIDEO=true
+YT_DLP_ARGS=--format mp4 --no-check-certificate
+```
+
+- `CLEANUP_SOURCE_VIDEO=true` (default): delete original uploaded video after analysis
+- `YT_DLP_ARGS`: optional args passed to yt-dlp
+
+For local development without Docker, adjust `DATABASE_URL`/`REDIS_URL` to host endpoints.
+
+## 5) Run (one command)
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up --build -d --scale worker=1
 ```
 
-API base: `http://localhost:8000`
-
-The one-command flow is:
-
-1. PostgreSQL and Redis are started.
-2. API and worker containers are started.
-3. Open `http://localhost:8000` and use the minimal UI.
-
-## API list
-
-- `POST /videos/upload` : upload a file
-  - form-data: `file` and optional `category_tag`
-- `POST /videos/upload` : optional `source_url`
-- `POST /jobs/analyze` : request body `{ "video_id": "..." }`
-- `GET /jobs/{job_id}` : job status and progress
-- `GET /videos/{video_id}/tokens` : token JSON (schema v1.0)
-- `POST /videos/{video_id}/prompt` : body `{ "target": "sora|seedance|script|all" }`
-- `GET /stats/summary` : query filters `category_tag`, `start_date`, `end_date`, `duration_bucket`
-- `GET /stats/patterns/top` : query filters `category_tag`, `start_date`, `end_date`, `limit`
-
-## API examples
+Then in another terminal:
 
 ```bash
-# 1) Upload
-curl -X POST "http://localhost:8000/videos/upload" -F "file=@sample.mp4" -F "category_tag=review"
-
-# 2) enqueue analyze
-curl -X POST "http://localhost:8000/jobs/analyze" -H "Content-Type: application/json" -d "{\"video_id\":\"<VIDEO_ID>\"}"
-
-# 3) job status
-curl -X GET "http://localhost:8000/jobs/<JOB_ID>"
-
-# 4) tokens
-curl -X GET "http://localhost:8000/videos/<VIDEO_ID>/tokens"
-
-# 5) prompts
-curl -X POST "http://localhost:8000/videos/<VIDEO_ID>/prompt" -H "Content-Type: application/json" -d "{\"target\":\"all\"}"
-
-# 6) summary + patterns
-curl -X GET "http://localhost:8000/stats/summary?category_tag=review&start_date=2026-01-01&end_date=2026-12-31&duration_bucket=0_10"
-curl -X GET "http://localhost:8000/stats/patterns/top?category_tag=review&limit=5"
+docker compose exec api bash -lc "alembic upgrade head"
 ```
 
-## Smoke test (PowerShell)
+### One-command verify
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected: `{"status":"ok"}`.
+
+## 6) API quick calls
+
+All URLs are `http://127.0.0.1:8000`.
+
+- Upload (file)
+  - `POST /videos/upload` form-data: `file`, `category_tag?`
+
+```bash
+curl -X POST "http://127.0.0.1:8000/videos/upload" -F "file=@sample.mp4" -F "category_tag=review"
+```
+
+- Upload (URL, only YouTube/TikTok allowed)
+  - `POST /videos/upload` form-data: `source_url`, `category_tag?`
+
+```bash
+curl -X POST "http://127.0.0.1:8000/videos/upload" -F "source_url=https://www.youtube.com/shorts/..." -F "category_tag=review"
+```
+
+- Start analyze
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/analyze" -H "Content-Type: application/json" -d "{\"video_id\":\"<VIDEO_ID>\"}"
+```
+
+- Job status
+
+```bash
+curl -X GET "http://127.0.0.1:8000/jobs/<JOB_ID>"
+```
+
+- Tokens
+
+```bash
+curl -X GET "http://127.0.0.1:8000/videos/<VIDEO_ID>/tokens"
+```
+
+- Prompt (model-specific)
+
+```bash
+curl -X POST "http://127.0.0.1:8000/videos/<VIDEO_ID>/prompt" \
+  -H "Content-Type: application/json" \
+  -d "{\"target\":\"sora\"}"
+
+curl -X POST "http://127.0.0.1:8000/videos/<VIDEO_ID>/prompt" \
+  -H "Content-Type: application/json" \
+  -d "{\"target\":\"seedance\"}"
+
+# custom model name supported
+curl -X POST "http://127.0.0.1:8000/videos/<VIDEO_ID>/prompt" \
+  -H "Content-Type: application/json" \
+  -d "{\"target\":\"gpt-4o-mini\"}"
+
+# all built-ins
+curl -X POST "http://127.0.0.1:8000/videos/<VIDEO_ID>/prompt" \
+  -H "Content-Type: application/json" \
+  -d "{\"target\":\"all\"}"
+```
+
+- Stats
+
+```bash
+curl -X GET "http://127.0.0.1:8000/stats/summary?category_tag=review&duration_bucket=30-60"
+curl -X GET "http://127.0.0.1:8000/stats/patterns/top?category_tag=review&limit=5"
+```
+
+## 7) Processing rules
+
+- Queue: one worker only (`docker compose up --scale worker=1`) keeps FIFO execution.
+- Analysis state transitions: `queued -> running -> done|failed`.
+- Prompt is generated only via `POST /videos/{video_id}/prompt`.
+- Token schema is fixed at `schema_version: 1.0`.
+- `hook.hook_text_ocr` is saved in token payload for hook text hint.
+- Source cleanup:
+  - `CLEANUP_SOURCE_VIDEO=true` delete original mp4 after job finishes (pass/fail)
+  - temporary artifacts (`frames_*`, `audio.wav`) are always deleted
+
+## 8) URL upload compatibility
+
+- Allowed hosts:
+  - YouTube: `youtube.com`, `youtu.be`, `m.youtube.com`
+  - TikTok: `tiktok.com`, `vm.tiktok.com`
+- URL must be `http/https`.
+- Failure to download returns 400.
+
+## 9) Smoke test
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\smoke-test.ps1 -VideoPath "C:\path\to\your\video.mp4"
+# install requirements first (for local tests, if needed)
+# powershell: .\scripts\smoke-test.ps1 -VideoPath ".\storage\\sample.mp4"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -VideoPath "path\\to\\sample.mp4"
 ```
 
-The script checks:
-- API health
-- upload
-- analyze queue
-- token generation
-- prompt generation (`all`)
-- summary/pattern stats
+Optional URL tests:
 
-Outputs compact JSON with `video_id`, `job_id`, and token/prompt summary.
-
-## Local run (without Docker)
-
-```bash
-python -m venv .venv
-. .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.api.main:app --reload
-rq worker shorts -u redis://localhost:6379/0
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -VideoPath ".\storage\\sample.mp4" -YoutubeUrl "https://www.youtube.com/shorts/..." -TikTokUrl "https://www.tiktok.com/@..."
 ```
 
-## DB migration
+## 10) Troubleshooting
+
+- Health API fail: `docker compose logs -f api`
+- Job stuck: check worker logs `docker compose logs -f worker`
+- DB table mismatch: run `docker compose exec api bash -lc "alembic upgrade head"`
+- FFmpeg/Tesseract/yt-dlp missing in container: ensure Dockerfile install step includes `ffmpeg`, `tesseract-ocr`
+- Mount issues on Windows: use this compose file without host bind path for storage (named volume `storage`)
+
+## 11) Branch & push flow
 
 ```bash
-alembic upgrade head
-```
-
-Generated tables from `migrations/versions/001_initial.py`:
-
-- `videos`
-- `jobs`
-- `tokens`
-- `prompts`
-
-## Token schema (summary)
-
-- `schema_version`
-- `video_id`, `duration_sec`, `resolution`
-- `hook`
-- `editing`
-- `subtitle`
-- `visual`
-- `audio`
-- `structure`
-- `notes`
-
-Raw OCR text is not exposed. Generated output stores only normalized summaries/statistics.
-
-## Security rules
-
-- No raw subtitles/text are returned in prompt output.
-- Prompt templates are generic and avoid repeated or identifying wording.
-- Creator-identifying elements are not included.
-
-## Operations
-
-```bash
-# check logs
-docker compose logs -f api
-docker compose logs -f worker
-
-# health check
-curl -X GET "http://localhost:8000/health"
-```
-
-- Failed jobs are marked `status=failed` with `error` message, tokens are not generated.
-- OCR partial failures are written as warnings in `tokens.notes.warnings` and analysis continues.
-
-## Upload flow example
-
-```bash
-git branch -M codex/shorts-profiler-mvp-20260303
+git checkout -b codex/shorts-profiler-mvp-YYYYMMDD
 git add .
 git commit -m "feat: implement shorts-profiler mvp"
 git remote add origin https://github.com/kirin765/shorts-profiler.git
-git push -u origin codex/shorts-profiler-mvp-20260303
+git push -u origin codex/shorts-profiler-mvp-YYYYMMDD
 ```

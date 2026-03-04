@@ -3,7 +3,7 @@ from __future__ import annotations
 import traceback
 from datetime import datetime
 
-from app.core.config import tmp_dir, videos_dir
+from app.core.config import settings, tmp_dir, videos_dir
 from app.core.db import SessionLocal
 from app.core.models import Job, Tokens, Video
 from app.core import media
@@ -59,6 +59,7 @@ def _build_tokens(
     energy_curve: str,
     silence_ratio: float,
     beats: list,
+    hook_text_ocr: str | None,
     warnings: list[str],
 ) -> dict:
     duration = float(meta.get("duration_sec", 0.0) or 0.0)
@@ -69,7 +70,7 @@ def _build_tokens(
         "resolution": {"w": meta.get("width"), "h": meta.get("height")},
         "hook": {
             "time_range": [0.0, min(2.0, max(0.8, duration * 0.1))],
-            "hook_text_ocr": None,
+            "hook_text_ocr": hook_text_ocr,
             "hook_type": _infer_hook_type(total_chars, density, cuts_per_10),
         },
         "editing": {
@@ -157,7 +158,29 @@ def run_analysis(video_id: str, job_id: str) -> dict:
         cuts_per_10 = (cut_count / duration) * 10.0 if duration > 0 else 0.0
 
         _update_job(db, job_id, progress=52.0)
-        total_chars, position_ratio, subtitle_present, subtitles = media.extract_text_frames(all_frames)
+        total_chars, position_ratio, subtitle_present, subtitles, hook_text_ocr = media.extract_text_frames(all_frames)
+        if not first_frames:
+            warnings.append("first3-seconds dense sampling returned no frames")
+        else:
+            # prefer early-hook visibility: combine coarse scan and dense early hook scan
+            first_hook_chars, _, first_hook_present, first_hook_subs, first_hook_text = media.extract_text_frames(first_frames)
+            total_chars += first_hook_chars
+            if first_hook_present:
+                subtitle_present = subtitle_present or first_hook_present
+            if first_hook_subs:
+                subtitles.extend(first_hook_subs)
+            if not hook_text_ocr and first_hook_text:
+                hook_text_ocr = first_hook_text
+            elif hook_text_ocr and first_hook_text:
+                merged = f"{hook_text_ocr} | {first_hook_text}"
+                hook_text_ocr = merged[:500]
+
+        if hook_text_ocr and len(hook_text_ocr.strip()) == 0:
+            hook_text_ocr = None
+
+        if hook_text_ocr is None:
+            warnings.append("hook_text_ocr is unavailable")
+
         density = _safe_bucket(total_chars / max(duration, 1.0))
         position = "unknown"
         if position_ratio:
@@ -191,6 +214,7 @@ def run_analysis(video_id: str, job_id: str) -> dict:
             energy_curve=energy_curve,
             silence_ratio=silence_ratio,
             beats=beats,
+            hook_text_ocr=hook_text_ocr,
             warnings=warnings,
         )
 
@@ -234,6 +258,12 @@ def run_analysis(video_id: str, job_id: str) -> dict:
             media.cleanup_dir(work_dir)
         except Exception:
             pass
+        source_path = videos_dir() / f"{video_id}.mp4"
+        if settings.cleanup_source_video and source_path.exists():
+            try:
+                source_path.unlink()
+            except Exception:
+                pass
         db.close()
 
 

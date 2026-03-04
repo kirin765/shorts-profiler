@@ -4,8 +4,8 @@ from datetime import datetime
 import shutil
 import uuid
 from typing import Optional
+from urllib.parse import urlparse
 
-import requests
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +13,7 @@ from redis import Redis
 from rq import Queue
 from sqlalchemy.orm import Session
 
+from app.core import media
 from app.core.config import settings, videos_dir, tmp_dir
 from app.core.db import get_db
 from app.core.models import Job, Prompt, Tokens, Video
@@ -79,6 +80,30 @@ def _validate_extension(filename: str) -> None:
         raise HTTPException(status_code=400, detail=f"unsupported format. allowed: {', '.join(sorted(allowed))}")
 
 
+def _is_supported_source_url(source_url: str) -> bool:
+    try:
+        parsed = urlparse(source_url)
+    except Exception:
+        return False
+
+    if parsed.scheme not in {"http", "https"}:
+        return False
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+
+    allow_hosts = (
+        "youtube.com",
+        "youtu.be",
+        "m.youtube.com",
+        "tiktok.com",
+        "www.tiktok.com",
+        "vm.tiktok.com",
+    )
+    return any(host == h or host.endswith("." + h) for h in allow_hosts)
+
+
 def _read_json_body(db: Session, video_id: str) -> dict:
     token_row = db.query(Tokens).filter(Tokens.video_id == video_id).first()
     if token_row is None:
@@ -98,6 +123,7 @@ def upload_video(
 
     video_id = str(uuid.uuid4())
     target_path = videos_dir() / f"{video_id}.mp4"
+    source_url = (source_url or "").strip()
 
     if file is not None:
         _validate_extension(file.filename or "")
@@ -106,15 +132,15 @@ def upload_video(
         source_type = "file"
         source_ref = file.filename
     else:
-        if not source_url.startswith("http://") and not source_url.startswith("https://"):
-            raise HTTPException(status_code=400, detail="source_url must start with http/https")
+        if not _is_supported_source_url(source_url):
+            raise HTTPException(
+                status_code=400,
+                detail="source_url must be http/https and host youtube/tiktok domain",
+            )
         try:
-            response = requests.get(source_url, timeout=60, stream=True)
-            response.raise_for_status()
-            with target_path.open("wb") as out:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        out.write(chunk)
+            downloaded = media.download_video_from_url_with_ytdlp(source_url, target_path)
+            if downloaded != target_path:
+                shutil.move(str(downloaded), str(target_path))
             source_type = "url"
             source_ref = source_url
         except Exception as exc:
@@ -181,7 +207,7 @@ def get_tokens(video_id: str, db: Session = Depends(get_db)):
 @app.post("/videos/{video_id}/prompt", response_model=PromptResponse)
 def build_prompt(video_id: str, payload: PromptRequest, db: Session = Depends(get_db)):
     tokens = _read_json_body(db, video_id)
-    built = build_prompts(tokens, payload.target.value)
+    built = build_prompts(tokens, payload.target)
 
     for target, text in built.items():
         row = (

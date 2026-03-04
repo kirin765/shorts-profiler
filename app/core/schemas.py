@@ -1,7 +1,7 @@
-from enum import Enum
 from typing import Any
+import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class UploadResponse(BaseModel):
@@ -24,15 +24,26 @@ class JobStatusResponse(BaseModel):
     error: str | None = None
 
 
-class PromptTarget(str, Enum):
-    sora = "sora"
-    seedance = "seedance"
-    script = "script"
-    all = "all"
-
-
 class PromptRequest(BaseModel):
-    target: PromptTarget = PromptTarget.all
+    target: str = Field(default="all", min_length=1, max_length=80)
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            raise ValueError("target is required")
+
+        if value in {"all", "sora", "seedance", "script"}:
+            return value
+
+        if len(value) > 80:
+            raise ValueError("target must be 80 chars or less")
+
+        if not re.fullmatch(r"[A-Za-z0-9._:+/#-]{1,80}", value):
+            raise ValueError("target may only contain letters, numbers and . _ : + / # -")
+
+        return value
 
 
 class PromptResponse(BaseModel):

@@ -3,11 +3,14 @@ import shutil
 import subprocess
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable
+import shlex
+from typing import Any
 
 import cv2
 import numpy as np
 import pytesseract
+
+from app.core.config import settings
 
 
 def _run_cmd(cmd: list[str]) -> tuple[int, str, str]:
@@ -28,6 +31,47 @@ def ensure_dir(path: Path) -> None:
 def cleanup_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
+
+
+def _parse_ytdlp_args(extra_args: str) -> list[str]:
+    return shlex.split(extra_args.strip()) if extra_args else []
+
+
+def download_video_from_url_with_ytdlp(url: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    base = str(output_path.with_suffix(""))
+    ytdlp_args = _parse_ytdlp_args(settings.ytdlp_args)
+    cmd = [
+        "yt-dlp",
+        *ytdlp_args,
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        f"{base}.%(ext)s",
+        url,
+    ]
+    rc, out, err = _run_cmd(cmd)
+    if rc != 0:
+        raise RuntimeError(f"yt-dlp failed: {err.strip() or out.strip()}")
+
+    output_file = Path(f"{base}.mp4")
+    if output_file.exists():
+        return output_file
+
+    # fallback for odd ext if remux not applied
+    candidates = sorted(output_path.parent.glob(output_path.stem + ".*"))
+    if not candidates:
+        raise RuntimeError("yt-dlp finished but output file not found")
+
+    downloaded = candidates[0]
+    if downloaded.suffix.lower() != ".mp4":
+        converted = output_file
+        try:
+            shutil.move(str(downloaded), converted)
+            return converted
+        except Exception:
+            raise RuntimeError(f"unexpected output file extension: {downloaded.name}")
+    return downloaded
 
 
 def ffprobe_info(video_path: Path) -> dict[str, Any]:
@@ -137,14 +181,17 @@ def estimate_cuts(video_path: Path, frames: list[Path], duration: float) -> list
     return detect_cuts_hist(frames)
 
 
-def extract_text_frames(frames: list[Path]) -> tuple[int, dict[str, float], bool, list[str]]:
+def extract_text_frames(
+    frames: list[Path], max_text_chars: int = 500
+) -> tuple[int, dict[str, float], bool, list[str], str | None]:
     if not frames:
         return 0, {"top": 0.0, "middle": 0.0, "bottom": 0.0}, False, []
 
     total_chars = 0
     present_count = 0
     position_hits = {"top": 0, "middle": 0, "bottom": 0}
-    subtitles: list[str] = []
+    subtitle_texts: list[str] = []
+    hook_candidates: list[str] = []
 
     for frame_path in frames:
         img = cv2.imread(str(frame_path))
@@ -188,14 +235,21 @@ def extract_text_frames(frames: list[Path]) -> tuple[int, dict[str, float], bool
 
             total_chars += len(text)
             present_count += 1
-            if len(text) >= 4:
-                subtitles.append(text)
+            norm = " ".join(text.split())
+            if len(norm) >= 4:
+                subtitle_texts.append(norm)
+                hook_candidates.append(norm)
 
     total_frames = max(len(frames), 1)
     position_ratio = {
         k: v / total_frames for k, v in position_hits.items()
     }
-    return total_chars, position_ratio, present_count > 0, subtitles
+    # remove duplicates while preserving order
+    deduped = list(dict.fromkeys(hook_candidates))
+    hook_text = " | ".join(deduped) if deduped else None
+    if hook_text and len(hook_text) > max_text_chars:
+        hook_text = hook_text[:max_text_chars]
+    return total_chars, position_ratio, present_count > 0, subtitle_texts, hook_text
 
 
 def estimate_face_presence(frames: list[Path]) -> tuple[float, float]:

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     video_bucket_path: str = "videos"
     tmp_path: str = "tmp"
     queue_name: str = "shorts"
+    cleanup_source_video: bool = True
+    ytdlp_args: str = "--format mp4 --no-check-certificate"
 
     class Config:
         env_file = ".env"
