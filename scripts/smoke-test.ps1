@@ -134,6 +134,15 @@ function Test-OneVideo {
     if (-not $tokenData.hook.PSObject.Properties.Name.Contains("hook_text_ocr")) {
         throw "hook_text_ocr missing in token payload"
     }
+    if ($tokenData.hook.hook_text_ocr -and $tokenData.hook.hook_text_ocr.Length -gt 500) {
+        throw "hook_text_ocr exceeds 500 chars"
+    }
+    if (-not $tokenData.structure.PSObject.Properties.Name.Contains("shots")) {
+        Write-Log "WARNING: structure.shots missing (may be empty)"
+    }
+    if ($tokenData.structure.shots -ne $null -and $tokenData.structure.shots.Count -gt 0) {
+        Write-Host "shots_count=$($tokenData.structure.shots.Count)"
+    }
 
     Write-Host "tokens: schema=$schema duration=$duration hook=$hookType"
 

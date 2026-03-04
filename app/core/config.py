@@ -13,14 +13,11 @@ class Settings(BaseSettings):
     tmp_path: str = "tmp"
     queue_name: str = "shorts"
     cleanup_source_video: bool = True
+    enable_asr: bool = False
     yt_dlp_args: str = Field(
         default="--format mp4 --no-check-certificate",
         alias="YT_DLP_ARGS",
     )
-
-    @property
-    def ytdlp_args(self) -> str:
-        return self.yt_dlp_args
 
     class Config:
         env_file = ".env"
